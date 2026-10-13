@@ -270,6 +270,39 @@ func TestSeeking(t *testing.T) {
 	})
 }
 
+func TestIndexStreamShortEOFChunk(t *testing.T) {
+	input := bytes.Repeat([]byte("MinLZ index EOF regression:"), 40000)
+	input = input[:1_000_000]
+
+	var stream bytes.Buffer
+	enc := minlz.NewWriter(&stream, minlz.WriterBlockSize(8<<20), minlz.WriterAddIndex(false))
+	if _, err := enc.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	index, err := minlz.IndexStream(bytes.NewReader(stream.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idx minlz.Index
+	tail, err := idx.Load(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tail) != 0 {
+		t.Fatalf("unexpected index tail: %d bytes", len(tail))
+	}
+	if idx.TotalUncompressed != int64(len(input)) {
+		t.Fatalf("total uncompressed mismatch: got %d, want %d", idx.TotalUncompressed, len(input))
+	}
+	if idx.TotalCompressed != int64(stream.Len()) {
+		t.Fatalf("total compressed mismatch: got %d, want %d", idx.TotalCompressed, stream.Len())
+	}
+}
+
 func TestSeekingStreamIndex(t *testing.T) {
 	compressed := bytes.Buffer{}
 

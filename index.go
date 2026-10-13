@@ -537,6 +537,15 @@ func IndexStream(r io.Reader) ([]byte, error) {
 			}
 			continue
 		case chunkTypeEOF:
+			if chunkLen > binary.MaxVarintLen64 {
+				return nil, ErrCorrupt
+			}
+			if chunkLen != 0 {
+				v, n := binary.Uvarint(buf[:chunkLen])
+				if n <= 0 || n != chunkLen || v != uint64(i.TotalUncompressed) {
+					return nil, ErrCorrupt
+				}
+			}
 			continue
 		}
 
