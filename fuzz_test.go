@@ -23,9 +23,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Uzer007-admin/minlz/internal/fuzz"
+	"github.com/Uzer007-admin/minlz/internal/reference"
 	"github.com/klauspost/compress/s2"
-	"github.com/minio/minlz/internal/fuzz"
-	"github.com/minio/minlz/internal/reference"
 )
 
 func FuzzEncodingBlocks(f *testing.F) {

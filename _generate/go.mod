@@ -1,4 +1,4 @@
-module github.com/minio/minlz/_generate
+module github.com/Uzer007-admin/minlz/_generate
 
 go 1.25.0
 

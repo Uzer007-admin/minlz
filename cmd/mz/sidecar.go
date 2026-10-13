@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/minio/minlz"
+	"github.com/Uzer007-admin/minlz"
 )
 
 // mainSidecar dispatches `mz sidecar <subcommand> ...`.

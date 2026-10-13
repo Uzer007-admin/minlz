@@ -29,8 +29,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Uzer007-admin/minlz/internal/race"
 	"github.com/klauspost/compress/s2"
-	"github.com/minio/minlz/internal/race"
 )
 
 func TestEncodeHuge(t *testing.T) {

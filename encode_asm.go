@@ -22,7 +22,7 @@
 package minlz
 
 import (
-	"github.com/minio/minlz/internal/race"
+	"github.com/Uzer007-admin/minlz/internal/race"
 )
 
 const hasAsm = true

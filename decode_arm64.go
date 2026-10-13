@@ -21,7 +21,7 @@
 package minlz
 
 import (
-	"github.com/minio/minlz/internal/race"
+	"github.com/Uzer007-admin/minlz/internal/race"
 )
 
 // minLZDecode writes the decoding of src to dst. It assumes that the varint-encoded

@@ -1,0 +1,43 @@
+# v1.2.3
+
+This release publishes the fork as `github.com/Uzer007-admin/minlz` and keeps
+the existing MinLZ block and stream format. Go 1.25 or later is required.
+
+```sh
+go get github.com/Uzer007-admin/minlz@v1.2.3
+go install github.com/Uzer007-admin/minlz/cmd/mz@v1.2.3
+```
+
+The amd64 decoder expands the completed prefix for long overlapping tail
+matches and uses bounded 16-byte copies for eligible short matches. This
+removes the byte-copy bottleneck on repetitive blocks. Input/output bounds and
+corruption checks are preserved. The generator is updated; ARM64 assembly is
+unchanged.
+
+Stream index construction now validates complete EOF size varints and checks
+the declared size against the indexed data. An omitted optional EOF size is
+still accepted.
+
+The release includes upstream changes through `46d6409`, including the encoder
+offset bounds, scratch-pool fixes, ARM64 encoder updates, and minimal 64 KiB
+literal headers. The dedicated upstream branch retains the canonical MinIO
+module path; see [the proposed PR description](UPSTREAM_PR.md).
+
+Validation covered Windows and Linux on Go 1.25.0, 1.26.0, and 1.27.1, normal
+and fallback build modes, race, vet, differential fuzzing, and Go/C
+interoperability through 14 MiB. ARM64 builds were checked without local ARM64
+execution. Both compress v1.20.1 and the consumer-selected v1.20.3 were tested.
+
+For a repeated 16-byte pattern, seven pinned comparisons against stock MinLZ
+v1.2.2 measured:
+
+| Platform | Input | Stock | v1.2.3 | Speedup |
+|---|---:|---:|---:|---:|
+| Windows | 1 MiB | 265.1 us | 25.5 us | 10.38x |
+| Windows | 14 MiB | 3.73 ms | 0.659 ms | 5.66x |
+| Linux | 1 MiB | 629.3 us | 31.8 us | 19.76x |
+| Linux | 14 MiB | 8.90 ms | 0.818 ms | 10.88x |
+
+Decoding reports `0 B/op` and `0 allocs/op`. The measured size grid spans 16
+bytes through 14 MiB. Literal paths retain their existing behavior; the results
+do not establish a speedup for every input pattern or for an entire application.

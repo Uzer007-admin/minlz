@@ -62,9 +62,9 @@ changelog:
 nfpms:
   -
     file_name_template: "minlz_package__{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
-    vendor: MinIO Inc
-    homepage: https://github.com/minio/minlz
-    maintainer: MinIO Inc <dev@min.io>
+    vendor: MinLZ contributors
+    homepage: https://github.com/Uzer007-admin/minlz
+    maintainer: Uzer007-admin <nightfuriya@yandex.ru>
     description: MinLZ Compression Tool
     license: Apache 2.0
     formats:

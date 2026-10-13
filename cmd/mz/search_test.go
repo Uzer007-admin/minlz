@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/minio/minlz"
+	"github.com/Uzer007-admin/minlz"
 )
 
 // TestSearchCountLineStraddle guards against double-counting a matching line

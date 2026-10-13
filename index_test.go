@@ -24,7 +24,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/minio/minlz"
+	"github.com/Uzer007-admin/minlz"
 )
 
 func ExampleIndex_Load() {

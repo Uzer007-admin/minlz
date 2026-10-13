@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minio/minlz"
-	"github.com/minio/minlz/cmd/internal/filepathx"
+	"github.com/Uzer007-admin/minlz"
+	"github.com/Uzer007-admin/minlz/cmd/internal/filepathx"
 )
 
 func mainSearch(args []string) {

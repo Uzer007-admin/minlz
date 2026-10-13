@@ -29,7 +29,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/minio/minlz/cmd/internal/shttp"
+	"github.com/Uzer007-admin/minlz/cmd/internal/shttp"
 )
 
 var (
@@ -59,7 +59,7 @@ func main() {
 	flag.Usage = func() {
 		w := flag.CommandLine.Output()
 		fmt.Fprintf(w, "MinLZ compression tool v%v built at %v, (c) 2025 MinIO Inc.\n", version, date)
-		fmt.Fprint(w, "Released under Apache 2.0 License. Homepage: https://github.com/minio/minlz\n\n")
+		fmt.Fprint(w, "Released under Apache 2.0 License. Homepage: https://github.com/Uzer007-admin/minlz\n\n")
 		fmt.Fprintf(w, "Usage:\nCompress:     %s c [options] <input>\n", os.Args[0])
 		fmt.Fprintf(w, "Decompress:   %s d [options] <input>\n", os.Args[0])
 		fmt.Fprintf(w, " (cat)    :   %s cat [options] <input>\n", os.Args[0])

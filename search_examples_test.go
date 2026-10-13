@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/minio/minlz"
+	"github.com/Uzer007-admin/minlz"
 )
 
 func ExampleWriterSearchTable() {

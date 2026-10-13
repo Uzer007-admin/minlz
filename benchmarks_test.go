@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/minio/minlz/internal/reference"
+	"github.com/Uzer007-admin/minlz/internal/reference"
 )
 
 // testFiles' values are copied directly from

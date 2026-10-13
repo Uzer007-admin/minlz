@@ -1,5 +1,13 @@
 # MinLZ
 
+This fork is published as `github.com/Uzer007-admin/minlz`.
+It preserves the MinLZ block and stream format and the Apache-2.0 license.
+The upstream implementation is [minio/minlz](https://github.com/minio/minlz).
+
+```sh
+go get github.com/Uzer007-admin/minlz@v1.2.3
+```
+
 MinLZ is a LZ77-type compressor with a fixed byte-aligned encoding, 
 in the similar class to Snappy and LZ4.
 
@@ -40,6 +48,12 @@ For format specification see the included [SPEC.md](SPEC.md).
 
 # Changelog
 
+* [v1.2.3](https://github.com/Uzer007-admin/minlz/releases/tag/v1.2.3)
+  * Accelerate long amd64 overlapping tail copies by expanding the decoded prefix.
+  * Use bounded 16-byte copies for eligible short tail matches.
+  * Validate EOF size varints when building a stream index.
+  * Publish this fork under `github.com/Uzer007-admin/minlz`.
+
 * [v1.2.0](https://github.com/minio/minlz/releases/tag/v1.2.0)
   * Add [MinLZ Search](https://github.com/minio/minlz/blob/main/SEARCH.md).
   * Add mz stats in https://github.com/minio/minlz/pull/39
@@ -57,8 +71,8 @@ For format specification see the included [SPEC.md](SPEC.md).
 
 # Usage
 
-[![Go Reference](https://pkg.go.dev/badge/minio/minlz.svg)](https://pkg.go.dev/github.com/minio/minlz?tab=subdirectories)
-[![Go](https://github.com/minio/minlz/actions/workflows/go.yml/badge.svg)](https://github.com/minio/minlz/actions/workflows/go.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Uzer007-admin/minlz.svg)](https://pkg.go.dev/github.com/Uzer007-admin/minlz?tab=subdirectories)
+[![Go](https://github.com/Uzer007-admin/minlz/actions/workflows/go.yml/badge.svg)](https://github.com/Uzer007-admin/minlz/actions/workflows/go.yml)
 
 MinLZ can operate on *blocks* up to 8 MB or *streams* with unlimited length.
 
@@ -687,17 +701,17 @@ place in the chain. So streams will mostly appear slower in benchmarks.
 
 # Commandline utility
 
-Official releases can be downloaded from the [releases](https://github.com/minio/minlz/releases) section
+Fork releases can be downloaded from the [releases](https://github.com/Uzer007-admin/minlz/releases) section
 with binaries for most platforms.
 
-To install from source execute `go install github.com/minio/minlz/cmd/mz@latest`.
+To install from source execute `go install github.com/Uzer007-admin/minlz/cmd/mz@latest`.
 
 ## Usage
 
 ```
 λ mz
 MinLZ compression tool vx.x built at home, (c) 2025 MinIO Inc.
-Homepage: https://github.com/minio/minlz
+Homepage: https://github.com/Uzer007-admin/minlz
 
 Usage:
 Compress:     mz c [options] <input>

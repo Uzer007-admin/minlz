@@ -31,9 +31,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/minio/minlz"
-	"github.com/minio/minlz/cmd/internal/filepathx"
-	"github.com/minio/minlz/cmd/internal/readahead"
+	"github.com/Uzer007-admin/minlz"
+	"github.com/Uzer007-admin/minlz/cmd/internal/filepathx"
+	"github.com/Uzer007-admin/minlz/cmd/internal/readahead"
 )
 
 const maxBlockSize = 8 << 20

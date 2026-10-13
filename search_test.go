@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/minio/minlz/internal/reference"
+	"github.com/Uzer007-admin/minlz/internal/reference"
 )
 
 // loadTomSawyer returns the Tom Sawyer sample corpus.

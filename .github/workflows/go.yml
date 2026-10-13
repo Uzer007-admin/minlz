@@ -97,7 +97,7 @@ jobs:
       run: GOOS=linux GOARCH=386 go test -short ./...
 
     - name: Build mz
-      run: go build github.com/minio/minlz/cmd/mz&&./mz c -verify -o=comp.mz mz&&./mz d -rm comp.mz&&rm ./mz&&rm comp
+      run: go build github.com/Uzer007-admin/minlz/cmd/mz&&./mz c -verify -o=comp.mz mz&&./mz d -rm comp.mz&&rm ./mz&&rm comp
 
     - name: goreleaser deprecation
       run: curl -sfL https://git.io/goreleaser | VERSION=v2.18.2 sh -s -- check

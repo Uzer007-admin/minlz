@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minio/minlz/cmd/internal/filepathx"
+	"github.com/Uzer007-admin/minlz/cmd/internal/filepathx"
 )
 
 // Chunk types (redeclared from minlz package; spec-stable).
