@@ -1,3 +1,25 @@
+# v1.2.4
+
+Fix compressed-data CRC handling for MinLZ stream chunks of type `0x03`.
+
+Concurrent decoding now computes the compressed checksum before returning
+the input buffer to the reader pool. Deferred search and previous-block context
+checks exclude the decoded-size varint, matching the other stream readers.
+
+Incorrect checksums remain errors. `ReaderIgnoreCRC` and the corresponding
+search option still skip checksums while rejecting malformed blocks. Chunk
+`0x02` continues to validate the uncompressed bytes. Public APIs, stream
+formats, dependencies, and the amd64 overlap optimization are unchanged.
+
+Regression tests cover both CRC modes, deferred and lazy decoding, boundary
+search matches, previous-block context, concurrent buffer reuse, invalid first
+and last checksums, and the CRC-ignore options.
+
+```sh
+go get github.com/Uzer007-admin/minlz@v1.2.4
+go install github.com/Uzer007-admin/minlz/cmd/mz@v1.2.4
+```
+
 # v1.2.3
 
 This release publishes the fork as `github.com/Uzer007-admin/minlz` and keeps
