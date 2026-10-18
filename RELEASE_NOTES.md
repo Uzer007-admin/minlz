@@ -1,3 +1,29 @@
+# v1.2.5
+
+Integrate the final review revisions from [PR #84](https://github.com/minio/minlz/pull/84)
+and [PR #85](https://github.com/minio/minlz/pull/85) into the fork.
+
+The decoder optimization and compressed-data CRC fixes are already included in
+v1.2.4. This release strengthens their regression coverage without changing
+runtime code, public APIs, module paths, dependencies, or the encoded format.
+
+Overlap-tail tests now live in `decode_test.go`; `benchmarks_test.go` contains
+12 codec-only cases covering copy widths, prefix-growth thresholds, offsets,
+and long matches. The application-specific Reindexer/CPROTO harness and corpus
+remain outside the repository as an [external attachment](https://github.com/user-attachments/files/33578544/minlz-reindexer-evidence.zip).
+
+CRC tests now live in `reader_test.go`. The boundary-search reproducer forces
+the `decodePending` path, verifies the exact match position and restored context,
+and asserts that a deferred block is decoded rather than skipped. Separate
+coverage checks lazy previous-block decoding, corrupt checksums, malformed
+input, CRC-ignore options, and concurrent buffer reuse. The test source also
+includes the requested `go fix` update.
+
+```sh
+go get github.com/Uzer007-admin/minlz@v1.2.5
+go install github.com/Uzer007-admin/minlz/cmd/mz@v1.2.5
+```
+
 # v1.2.4
 
 Fix compressed-data CRC handling for MinLZ stream chunks of type `0x03`.

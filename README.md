@@ -5,7 +5,7 @@ It preserves the MinLZ block and stream format and the Apache-2.0 license.
 The upstream implementation is [minio/minlz](https://github.com/minio/minlz).
 
 ```sh
-go get github.com/Uzer007-admin/minlz@v1.2.3
+go get github.com/Uzer007-admin/minlz@v1.2.5
 ```
 
 MinLZ is a LZ77-type compressor with a fixed byte-aligned encoding, 
@@ -47,6 +47,16 @@ This package implements the MinLZ specification v1.0 in Go.
 For format specification see the included [SPEC.md](SPEC.md).
 
 # Changelog
+
+* [v1.2.5](https://github.com/Uzer007-admin/minlz/releases/tag/v1.2.5)
+  * Integrate the reviewed regression tests from upstream PRs #84 and #85.
+  * Keep 12 codec-only overlap-tail benchmarks and externalize the Reindexer reproduction package.
+  * Make the boundary-search CRC regression exercise deferred decoding and verify previous-block context.
+  * Preserve the v1.2.4 runtime code, public APIs, dependencies, and encoded format.
+
+* [v1.2.4](https://github.com/Uzer007-admin/minlz/releases/tag/v1.2.4)
+  * Validate compressed-data CRCs before returning input buffers to the concurrent reader pool.
+  * Exclude the decoded-size header from compressed CRCs in deferred search and previous-block decoding.
 
 * [v1.2.3](https://github.com/Uzer007-admin/minlz/releases/tag/v1.2.3)
   * Accelerate long amd64 overlapping tail copies by expanding the decoded prefix.
