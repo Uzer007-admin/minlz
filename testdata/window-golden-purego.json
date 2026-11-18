@@ -1,0 +1,182 @@
+[
+  {
+    "N": 2162685,
+    "Kind": 0,
+    "Bytes": 2077409,
+    "SHA": "d20c8dad9f5743fbceaa1f533cce0122c28d35277290768b4ad662f743f78fb3"
+  },
+  {
+    "N": 2162685,
+    "Kind": 1,
+    "Bytes": 2162687,
+    "SHA": "8f73368892d8c239abf0c62a8a70c222366becb3cbd0fc9c699d040f4e42ef82"
+  },
+  {
+    "N": 2162685,
+    "Kind": 2,
+    "Bytes": 1085328,
+    "SHA": "e57382bc812d868b9eedb3bed19ab9abd12fe220020ac9516d40f40ff71e7803"
+  },
+  {
+    "N": 2162685,
+    "Kind": 3,
+    "Bytes": 1135482,
+    "SHA": "15d1b841aa006a437e5077a0a5bfcb4af3e39d8e5e50f6ff4ec7e6f96c60faf9"
+  },
+  {
+    "N": 2162685,
+    "Kind": 4,
+    "Bytes": 2162687,
+    "SHA": "32ebc02f91974710d738d0739f04d5a50e9bfa93570c0ebe0e45249ffaf2e086"
+  },
+  {
+    "N": 2162685,
+    "Kind": 5,
+    "Bytes": 2162687,
+    "SHA": "d0b3f6fa704e708e3fdce6df502b1e223df7d9c37197f37afcce5057863935e6"
+  },
+  {
+    "N": 2162687,
+    "Kind": 0,
+    "Bytes": 2077421,
+    "SHA": "1f58977f09afd56da302306266b0c3879fc803b3f17bfef58aa6eb48f88b0b52"
+  },
+  {
+    "N": 2162687,
+    "Kind": 1,
+    "Bytes": 2162689,
+    "SHA": "58b5c078615f264c1d43305aaa2b953debc24e9af21a9949278758194580cd54"
+  },
+  {
+    "N": 2162687,
+    "Kind": 2,
+    "Bytes": 1085329,
+    "SHA": "8e2663704569139d3cc0ce12571fdbc4e2bc1b7b9af654b1d47ab10ad9e3f48c"
+  },
+  {
+    "N": 2162687,
+    "Kind": 3,
+    "Bytes": 1135484,
+    "SHA": "fe82996e183755cba805819c313bd46f4f558f9d7ac45b7d20cb5ad38d98161f"
+  },
+  {
+    "N": 2162687,
+    "Kind": 4,
+    "Bytes": 2162689,
+    "SHA": "f5a3478725e701c1eb3cbe7e8b06b3d1c0291dbf0fcc688069fbf3db81e01b00"
+  },
+  {
+    "N": 2162687,
+    "Kind": 5,
+    "Bytes": 2162689,
+    "SHA": "765ee4b82416a7f18ace64b9118c639a91791c5b55baede8e5a740b966f1c63d"
+  },
+  {
+    "N": 2162688,
+    "Kind": 0,
+    "Bytes": 2077425,
+    "SHA": "efdb32bcb4d6ae1c0e181fcd2fe0a7afddfac81a3f19927b4e211a2f51c25f39"
+  },
+  {
+    "N": 2162688,
+    "Kind": 1,
+    "Bytes": 2162690,
+    "SHA": "cd2e9b33a4f43820b3fffa07e8d5d63ecd899dde68c82e075fdda58af0bf6c3b"
+  },
+  {
+    "N": 2162688,
+    "Kind": 2,
+    "Bytes": 1085329,
+    "SHA": "256d7c4ef62860d6eead7b29bdeeec7a97c2449d140e0644e5ef03e26b166bde"
+  },
+  {
+    "N": 2162688,
+    "Kind": 3,
+    "Bytes": 1135485,
+    "SHA": "5eef50471b9cd42392d2f82b5f072d6140b59aa0a23f9174ba601820da24acb5"
+  },
+  {
+    "N": 2162688,
+    "Kind": 4,
+    "Bytes": 2162690,
+    "SHA": "9ef0a1165a0b9cf516704c4fa4b920f1509dfd0d7c37064db2fc0d1398e0c7b1"
+  },
+  {
+    "N": 2162688,
+    "Kind": 5,
+    "Bytes": 2162690,
+    "SHA": "cf19dea49582b35d8c3736e38169d07fc5bc39d47a821c963bcd7eda7012b844"
+  },
+  {
+    "N": 3145728,
+    "Kind": 0,
+    "Bytes": 3021697,
+    "SHA": "87a3901b8d090b809056ec1a35ff7482a586d6b9a222c4a4a3f74d9b898e978b"
+  },
+  {
+    "N": 3145728,
+    "Kind": 1,
+    "Bytes": 3145730,
+    "SHA": "4c5423559106bd0cd47081d27784f137192c9f414f0181982c31e55c88bc076e"
+  },
+  {
+    "N": 3145728,
+    "Kind": 2,
+    "Bytes": 1576849,
+    "SHA": "4d020f69e32c64d2d96ba4a0fd1551ff32b9490a43764db5bb962c89aa8b1492"
+  },
+  {
+    "N": 3145728,
+    "Kind": 3,
+    "Bytes": 1622444,
+    "SHA": "12b839a8d997ed26f4a5ccd51da901434d4869114ef778105e18a690ecd521c0"
+  },
+  {
+    "N": 3145728,
+    "Kind": 4,
+    "Bytes": 3145730,
+    "SHA": "d7bed26142c9610db6e594d7a51711988ce7dbb49c07b23d1b212314ac248e93"
+  },
+  {
+    "N": 3145728,
+    "Kind": 5,
+    "Bytes": 3145730,
+    "SHA": "3857d9031441c78477cecbcf2d11f5ae8cf0f597b5199bb4ca4ef6a4b62b2665"
+  },
+  {
+    "N": 8388608,
+    "Kind": 0,
+    "Bytes": 8057884,
+    "SHA": "642754deb00fea9a01c46936fe5979c5f93b9e7420155afeb60f65167cf8bf18"
+  },
+  {
+    "N": 8388608,
+    "Kind": 1,
+    "Bytes": 8388610,
+    "SHA": "e700b4c6a442ca591b244500919c5073239845c5e5e36bd741f3513e42e347b9"
+  },
+  {
+    "N": 8388608,
+    "Kind": 2,
+    "Bytes": 4198289,
+    "SHA": "2418f195d5cb198d57d3e0407804c592e7e5cf1df7fc9a90a8a2b43cbbcbe790"
+  },
+  {
+    "N": 8388608,
+    "Kind": 3,
+    "Bytes": 4326221,
+    "SHA": "91578e82ac23f319281ba2e0602d32550cfbaac84021b034776ae1a1e9927717"
+  },
+  {
+    "N": 8388608,
+    "Kind": 4,
+    "Bytes": 8388610,
+    "SHA": "bbdf21bdea9f4e46db7a11c9106eda1befaddcc1eafd81dbd5aae7d77a44058c"
+  },
+  {
+    "N": 8388608,
+    "Kind": 5,
+    "Bytes": 8388610,
+    "SHA": "838914d1c9000de401deb086757b4eb313f4019300ef85f54c8aab26a3734dab"
+  }
+]

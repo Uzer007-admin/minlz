@@ -129,7 +129,8 @@ func (i *Index) Find(offset int64) (compressedOff, uncompressedOff int64, err er
 			return i.Offsets[n].UncompressedOffset > offset
 		})
 		if n == 0 {
-			n = 1
+			// The index may omit the (0, 0) entry, so it is implied.
+			return 0, 0, nil
 		}
 		return i.Offsets[n-1].CompressedOffset, i.Offsets[n-1].UncompressedOffset, nil
 	}
@@ -454,6 +455,7 @@ func (i *Index) LoadStream(rs io.ReadSeeker) error {
 // or stored separately.
 func IndexStream(r io.Reader) ([]byte, error) {
 	var i Index
+	var streamStart int64 // Uncompressed offset of the current stream.
 	var buf [MaxUserChunkSize]byte
 	var readHeader bool
 	for {
@@ -490,12 +492,16 @@ func IndexStream(r io.Reader) ([]byte, error) {
 				return nil, ErrCorrupt
 			}
 			// Skip checksum.
-			dLen, err := DecodedLen(buf[checksumSize:])
+			dLen, err := DecodedLen(buf[checksumSize:chunkLen])
 			if err != nil {
 				return nil, err
 			}
 			if dLen > maxBlockSize {
 				return nil, ErrCorrupt
+			}
+			if dLen == 0 {
+				// Empty chunks would give a 0 estimate and entries at duplicate offsets.
+				continue
 			}
 			if i.estBlockUncomp == 0 {
 				// Use first block for estimate...
@@ -511,6 +517,9 @@ func IndexStream(r io.Reader) ([]byte, error) {
 			n2 := chunkLen - checksumSize
 			if n2 < 0 || n2 > maxBlockSize {
 				return nil, ErrCorrupt
+			}
+			if n2 == 0 {
+				continue
 			}
 			if i.estBlockUncomp == 0 {
 				// Use first block for estimate...
@@ -535,6 +544,7 @@ func IndexStream(r io.Reader) ([]byte, error) {
 					}
 				}
 			}
+			streamStart = i.TotalUncompressed
 			continue
 		case chunkTypeEOF:
 			if chunkLen > binary.MaxVarintLen64 {
@@ -542,10 +552,12 @@ func IndexStream(r io.Reader) ([]byte, error) {
 			}
 			if chunkLen != 0 {
 				v, n := binary.Uvarint(buf[:chunkLen])
-				if n <= 0 || n != chunkLen || v != uint64(i.TotalUncompressed) {
+				if n <= 0 || n != chunkLen || v != uint64(i.TotalUncompressed-streamStart) {
 					return nil, ErrCorrupt
 				}
 			}
+			// A consecutive EOF chunk describes an empty stream.
+			streamStart = i.TotalUncompressed
 			continue
 		}
 

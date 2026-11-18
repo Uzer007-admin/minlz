@@ -73,6 +73,18 @@ const (
 // If you need to encode larger amounts of data, consider using
 // the streaming interface which gives all of these features.
 func Encode(dst, src []byte, level int) ([]byte, error) {
+	// In this bounded range MaxEncodedLen is exactly len(src)+2. Reuse the
+	// caller's reservation directly; the complete ASM emits the same block.
+	if useReservedFrontend && hasTinyAsm && !debugValidateBlocks && level == LevelFastest && uint(len(src)-22) <= 1002 && cap(dst) >= len(src)+2 {
+		dst = dst[:len(src)+2]
+		n := 0
+		if smallUseWhole(len(src)) {
+			n = encodeSmallWhole(dst, src)
+		} else {
+			n = encodeSmallCanonicalTiny(dst, src)
+		}
+		return dst[:n], nil
+	}
 	if n := MaxEncodedLen(len(src)); n < 0 {
 		return nil, ErrTooLarge
 	} else if cap(dst) < n {
@@ -81,8 +93,26 @@ func Encode(dst, src []byte, level int) ([]byte, error) {
 		dst = dst[:n]
 	}
 
-	if len(src) < minNonLiteralBlockSize {
-		return encodeUncompressed(dst[:0], src), nil
+	if len(src) <= 21 && (len(src) < minNonLiteralBlockSize || hasTinyAsm && level == LevelFastest) {
+		if len(src) == 0 {
+			dst[0] = 0
+			return dst[:1], nil
+		}
+		dst = dst[:len(src)+2]
+		binary.LittleEndian.PutUint16(dst, 0)
+		if len(src) >= 16 {
+			copy(dst[2:18], src[:16])
+			if len(src) > 16 {
+				copy(dst[len(src)-14:len(src)+2], src[len(src)-16:])
+			}
+		} else {
+			copy(dst[2:], src)
+		}
+		return dst, nil
+	}
+
+	if useReservedFrontend && hasTinyAsm && !debugValidateBlocks && level == LevelFastest {
+		return encodeFastestReserved(dst, src), nil
 	}
 
 	dst[0] = 0
@@ -93,11 +123,18 @@ func Encode(dst, src []byte, level int) ([]byte, error) {
 	var n int
 	switch level {
 	case LevelUncompressed:
+		if hasTinyAsm && len(src) >= 1<<20 {
+			return encodeUncompressedLarge(dst[:0], src), nil
+		}
 		return encodeUncompressed(dst[:0], src), nil
 	case LevelSuperFast:
 		n = encodeBlockFast(dst[d:], src)
 	case LevelFastest:
-		n = encodeBlock(dst[d:], src)
+		if hasTinyAsm && len(src) <= 16384 {
+			n = encodeBlockTiny(dst[d:], src)
+		} else {
+			n = encodeBlock(dst[d:], src)
+		}
 	case LevelBalanced:
 		n = encodeBlockBetter(dst[d:], src)
 	case LevelSmallest:
@@ -136,7 +173,14 @@ func Encode(dst, src []byte, level int) ([]byte, error) {
 		return dst[:d], nil
 	}
 	// Not compressible, emit as uncompressed.
-	return encodeUncompressed(dst[:0], src), nil
+	if hasTinyAsm && len(src) >= 1<<20 {
+		return encodeUncompressedLarge(dst[:0], src), nil
+	}
+	// The empty input returned above. MaxEncodedLen reserved exactly len(src)+2.
+	// Reuse that length instead of repeating append capacity checks.
+	binary.LittleEndian.PutUint16(dst, 0)
+	copy(dst[2:], src)
+	return dst, nil
 }
 
 // AppendEncoded will append the encoded version of src to dst.
@@ -167,16 +211,17 @@ func AppendEncoded(dst, src []byte, level int) ([]byte, error) {
 // If the block is incompressible or another error occurs,
 // nil will be returned.
 func TryEncode(dst, src []byte, level int) []byte {
+	// These inputs cannot produce a compressed block. Decline before
+	// reserving destination storage, including when dst is nil.
+	if len(src) <= 21 && (len(src) < minNonLiteralBlockSize || hasTinyAsm && level == LevelFastest) {
+		return nil
+	}
 	if n := MaxEncodedLen(len(src)); n < 0 {
 		return nil
 	} else if cap(dst) < n {
 		dst = make([]byte, n)
 	} else {
 		dst = dst[:n]
-	}
-
-	if len(src) < minNonLiteralBlockSize {
-		return nil
 	}
 
 	dst[0] = 0
@@ -189,7 +234,11 @@ func TryEncode(dst, src []byte, level int) []byte {
 	case LevelSuperFast:
 		n = encodeBlockFast(dst[d:], src)
 	case LevelFastest:
-		n = encodeBlock(dst[d:], src)
+		if hasTinyAsm && len(src) <= 16384 {
+			n = encodeBlockTiny(dst[d:], src)
+		} else {
+			n = encodeBlock(dst[d:], src)
+		}
 	case LevelBalanced:
 		n = encodeBlockBetter(dst[d:], src)
 	case LevelSmallest:
@@ -306,4 +355,56 @@ func emitLiteralSizeN(n int) int {
 	default:
 		return 4
 	}
+}
+
+// Keep stored blocks in cache where that beats the runtime's large-copy path.
+// Large-size dispatch stays in Encode so encodeUncompressed keeps its original
+// small body and can inline on short RPC payloads.
+func encodeUncompressedLarge(dst, src []byte) []byte {
+	if cap(dst)-len(dst) < len(src)+2 || !preferCachedStore() {
+		return append(append(dst, 0, 0), src...)
+	}
+	dst = append(dst, 0, 0)
+	start := len(dst)
+	dst = dst[:start+len(src)]
+	for off := 0; off < len(src); off += 64 << 10 {
+		end := min(off+64<<10, len(src))
+		copy(dst[start+off:start+end], src[off:end])
+	}
+	return dst
+}
+
+// encodeFastestReserved receives the full reservation checked by Encode.
+// Keep the common Fastest control flow separate from the other level parsers.
+func encodeFastestReserved(dst, src []byte) []byte {
+	if len(src) <= 1024 {
+		n := encodeSmallWhole(dst, src)
+		return dst[:n]
+	}
+	if len(src) < 16384 {
+		n := encodeMediumWhole(dst, src)
+		if n > 0 {
+			return dst[:n]
+		}
+		binary.LittleEndian.PutUint16(dst, 0)
+		copy(dst[2:], src)
+		return dst
+	}
+	dst[0] = 0
+	d := 1 + binary.PutUvarint(dst[1:], uint64(len(src)))
+	var n int
+	if len(src) <= 16384 {
+		n = encodeBlockTiny(dst[d:], src)
+	} else {
+		n = encodeBlock(dst[d:], src)
+	}
+	if n > 0 {
+		return dst[:d+n]
+	}
+	if len(src) >= 1<<20 {
+		return encodeUncompressedLarge(dst[:0], src)
+	}
+	binary.LittleEndian.PutUint16(dst, 0)
+	copy(dst[2:], src)
+	return dst
 }

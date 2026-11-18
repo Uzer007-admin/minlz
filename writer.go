@@ -100,7 +100,11 @@ type Writer struct {
 	uncompWritten int64 // Bytes sent to compression
 	output        chan chan result
 	buffers       sync.Pool
-	pad           int
+	// syncBuf is owned by the calling goroutine while a single-worker stream
+	// is active. Keeping it avoids boxing a []byte into the pool per block.
+	// Close and Reset return it to the pool, including after an output error.
+	syncBuf []byte
+	pad     int
 
 	writer    io.Writer
 	randSrc   io.Reader
@@ -181,6 +185,10 @@ func (w *Writer) err(err error) error {
 func (w *Writer) Reset(writer io.Writer) {
 	if !w.paramsOK {
 		return
+	}
+	if w.syncBuf != nil {
+		w.buffers.Put(w.syncBuf)
+		w.syncBuf = nil
 	}
 	// Close previous writer, if any.
 	if w.output != nil {
@@ -574,7 +582,11 @@ func (w *Writer) encodeBlock(obuf, uncompressed []byte) int {
 	case LevelSuperFast:
 		n = encodeBlockFast(obuf, uncompressed)
 	case LevelFastest:
-		n = encodeBlock(obuf, uncompressed)
+		if hasTinyAsm && len(uncompressed) <= 4096 {
+			n = encodeBlockTiny(obuf, uncompressed)
+		} else {
+			n = encodeBlock(obuf, uncompressed)
+		}
 	case LevelBalanced:
 		n = encodeBlockBetter(obuf, uncompressed)
 	case LevelSmallest:
@@ -888,7 +900,17 @@ func (w *Writer) writeSync(p []byte, final, omitTrailing bool) (nRet int, errRet
 			uncompressed, p = p, nil
 		}
 
-		obuf := w.buffers.Get().([]byte)[:w.obufLen]
+		// Only writeSync uses this buffer. Concurrent streams keep the pool
+		// path, including their initial synchronous flush.
+		var obuf []byte
+		if w.concurrency == 1 {
+			if w.syncBuf == nil {
+				w.syncBuf = w.buffers.Get().([]byte)[:w.obufLen]
+			}
+			obuf = w.syncBuf
+		} else {
+			obuf = w.buffers.Get().([]byte)[:w.obufLen]
+		}
 		checksum := crc(uncompressed)
 
 		chunkType := uint8(chunkTypeUncompressedData)
@@ -962,7 +984,9 @@ func (w *Writer) writeSync(p []byte, final, omitTrailing bool) (nRet int, errRet
 			}
 			w.written += int64(n)
 		}
-		w.buffers.Put(obuf)
+		if w.concurrency != 1 {
+			w.buffers.Put(obuf)
+		}
 		// Queue final output.
 		nRet += len(uncompressed)
 	}
@@ -1054,6 +1078,12 @@ func (w *Writer) CloseIndex() ([]byte, error) {
 }
 
 func (w *Writer) closeIndex(idx bool) ([]byte, error) {
+	defer func() {
+		if w.syncBuf != nil {
+			w.buffers.Put(w.syncBuf)
+			w.syncBuf = nil
+		}
+	}()
 	// omitTrailing=false: the stream-final block has no successor, so its
 	// no-overlap table is sound and worth keeping (unlike a mid-stream flush).
 	err := w.flush(false)

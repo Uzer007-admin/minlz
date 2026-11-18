@@ -5,7 +5,7 @@ It preserves the MinLZ block and stream format and the Apache-2.0 license.
 The upstream implementation is [minio/minlz](https://github.com/minio/minlz).
 
 ```sh
-go get github.com/Uzer007-admin/minlz@v1.2.5
+go get github.com/Uzer007-admin/minlz@v1.2.6
 ```
 
 MinLZ is a LZ77-type compressor with a fixed byte-aligned encoding, 
@@ -47,6 +47,12 @@ This package implements the MinLZ specification v1.0 in Go.
 For format specification see the included [SPEC.md](SPEC.md).
 
 # Changelog
+
+* [v1.2.6](https://github.com/Uzer007-admin/minlz/releases/tag/v1.2.6)
+  * Integrate the R7 and R8 classic-format encoder optimizations for amd64.
+  * Fix stream index lookups, empty chunks, and EOF size validation for concatenated streams.
+  * Bound coalesced reads in the sidecar searcher.
+  * Validate the data retained by Reader.Skip before returning it to callers.
 
 * [v1.2.5](https://github.com/Uzer007-admin/minlz/releases/tag/v1.2.5)
   * Integrate the reviewed regression tests from upstream PRs #84 and #85.

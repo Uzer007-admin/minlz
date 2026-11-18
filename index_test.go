@@ -303,6 +303,51 @@ func TestIndexStreamShortEOFChunk(t *testing.T) {
 	}
 }
 
+// TestIndexStreamEmptyChunks checks that empty data chunks at the start of a stream
+// don't add index entries (issue #92).
+func TestIndexStreamEmptyChunks(t *testing.T) {
+	var buf bytes.Buffer
+	w := minlz.NewWriter(&buf, minlz.WriterBlockSize(64<<10))
+	w.Write(bytes.Repeat([]byte("abcdefgh"), 1<<14))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.Bytes()
+	b, err := minlz.IndexStream(bytes.NewReader(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want minlz.Index
+	if _, err := want.Load(b); err != nil {
+		t.Fatal(err)
+	}
+	// Uncompressed chunk with only the CRC, and legacy compressed chunk with a size 0 block.
+	for _, empty := range [][]byte{{1, 4, 0, 0, 0, 0, 0, 0}, {0, 5, 0, 0, 0, 0, 0, 0, 0}} {
+		for _, n := range []int{3, 70000} {
+			in := append(append(append([]byte{}, s[:10]...), bytes.Repeat(empty, n)...), s[10:]...)
+			b, err := minlz.IndexStream(bytes.NewReader(in))
+			if err != nil {
+				t.Fatalf("type %d, %d empty: IndexStream: %v", empty[0], n, err)
+			}
+			var got minlz.Index
+			if _, err := got.Load(b); err != nil {
+				t.Fatalf("type %d, %d empty: Load: %v", empty[0], n, err)
+			}
+			shift := int64(n * len(empty))
+			if got.TotalUncompressed != want.TotalUncompressed || got.TotalCompressed != want.TotalCompressed+shift || len(got.Offsets) != len(want.Offsets) {
+				t.Fatalf("type %d, %d empty: got %d/%d with %d entries, want %d/%d with %d entries", empty[0], n,
+					got.TotalUncompressed, got.TotalCompressed, len(got.Offsets), want.TotalUncompressed, want.TotalCompressed+shift, len(want.Offsets))
+			}
+			for k, o := range want.Offsets {
+				o.CompressedOffset += shift
+				if got.Offsets[k] != o {
+					t.Errorf("type %d, %d empty: entry %d = %+v, want %+v", empty[0], n, k, got.Offsets[k], o)
+				}
+			}
+		}
+	}
+}
+
 func TestSeekingStreamIndex(t *testing.T) {
 	compressed := bytes.Buffer{}
 
@@ -617,4 +662,20 @@ func ExampleIndexStream() {
 	// Index saved
 	// last 10 bytes read
 	// 10 bytes at offset 10 read
+}
+
+func TestIndexFindNoZeroEntry(t *testing.T) {
+	for _, n := range []int64{200, 201} {
+		idx := minlz.Index{TotalUncompressed: (n + 1) << 20, TotalCompressed: (n + 1) * 1000}
+		for i := int64(1); i <= n; i++ {
+			idx.Offsets = append(idx.Offsets, minlz.OffsetPair{CompressedOffset: i * 1000, UncompressedOffset: i << 20})
+		}
+		for _, off := range []int64{0, 100, 1<<20 - 1, 1 << 20, 5<<20 + 7, n << 20} {
+			blk := off >> 20
+			c, u, err := idx.Find(off)
+			if err != nil || c != blk*1000 || u != blk<<20 {
+				t.Errorf("%d entries: Find(%d) = (%d, %d, %v), want (%d, %d, nil)", n, off, c, u, err, blk*1000, blk<<20)
+			}
+		}
+	}
 }

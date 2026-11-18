@@ -1,3 +1,16 @@
+# v1.2.6
+
+R7 and R8 improve classic MinLZ encoding on amd64. R7 reduces the cost of the large-block match search while preserving match order. R8 uses the existing 1 KiB assembly encoder for the reserved-destination path on 512–1,024-byte inputs with GOAMD64=v2 or later. That path runs on SSE4.2 without AVX.
+
+Stream indexing now handles indexes with an implied initial offset and streams with empty data chunks. EOF lengths are checked per stream in concatenated input. Sidecar searches bound coalesced reads. Reader.Skip validates the CRC of data retained for subsequent reads.
+
+The fork module path and the classic MinLZ block and stream format are preserved.
+
+~~~sh
+go get github.com/Uzer007-admin/minlz@v1.2.6
+go install github.com/Uzer007-admin/minlz/cmd/mz@v1.2.6
+~~~
+
 # v1.2.5
 
 Integrate the final review revisions from [PR #84](https://github.com/minio/minlz/pull/84)

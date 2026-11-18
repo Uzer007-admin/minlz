@@ -27,6 +27,10 @@ import (
 
 const hasAsm = true
 
+// Assembly encoders return normally for valid private-call arguments.
+// Return scratch immediately after the call: no deferred closure or
+// per-size-class defer bookkeeping remains on the successful path.
+
 // encodeBlock encodes a non-empty src to a guaranteed-large-enough dst. It
 // assumes that the varint-encoded length of the decompressed bytes has already
 // been written.
@@ -47,8 +51,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm(dst, src, tmp)
+		d = encodeFastBlockAsm(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	case len(src) > 512<<10:
 		const sz, pool = 32768, 0
 		tmp, ok := encFastPools[pool].Get().(*[sz]byte)
@@ -56,8 +61,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm2MB(dst, src, tmp)
+		d = encodeFastBlockAsm2MB(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	case len(src) > 64<<10:
 		const sz, pool = 32768, 0
 		tmp, ok := encFastPools[pool].Get().(*[sz]byte)
@@ -65,8 +71,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm512K(dst, src, tmp)
+		d = encodeFastBlockAsm512K(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	case len(src) > 16<<10:
 		const sz, pool = 8192, 1
 		tmp, ok := encFastPools[pool].Get().(*[sz]byte)
@@ -74,8 +81,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm64K(dst, src, tmp)
+		d = encodeFastBlockAsm64K(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	case len(src) > 4<<10:
 		const sz, pool = 4096, 2
 		tmp, ok := encFastPools[pool].Get().(*[sz]byte)
@@ -83,8 +91,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm16K(dst, src, tmp)
+		d = encodeFastBlockAsm16K(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	case len(src) > 1<<10:
 		const sz, pool = 2048, 3
 		tmp, ok := encFastPools[pool].Get().(*[sz]byte)
@@ -92,8 +101,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm4K(dst, src, tmp)
+		d = encodeFastBlockAsm4K(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	case len(src) > 32:
 		const sz, pool = 1024, 4
 		tmp, ok := encFastPools[pool].Get().(*[sz]byte)
@@ -101,8 +111,9 @@ func encodeBlockFast(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encFastPools[pool].Put(tmp)
-		return encodeFastBlockAsm1K(dst, src, tmp)
+		d = encodeFastBlockAsm1K(dst, src, tmp)
+		encFastPools[pool].Put(tmp)
+		return d
 	}
 	return 0
 }
@@ -116,6 +127,11 @@ func encodeBlockFast(dst, src []byte) (d int) {
 //	len(dst) >= MaxEncodedLen(len(src)) &&
 //	minNonLiteralBlockSize <= len(src) && len(src) <= maxBlockSize
 func encodeBlock(dst, src []byte) (d int) {
+	if len(src) > 512<<10 && prefixHardware(src) {
+		race.ReadSlice(src)
+		race.WriteSlice(dst)
+		return encodePrefixBlock(dst, src)
+	}
 	race.ReadSlice(src)
 	race.WriteSlice(dst)
 
@@ -127,8 +143,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm(dst, src, tmp)
+		d = encodeBlockLarge8M(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	case len(src) > 512<<10:
 		const sz, pool = 131072, 0
 		tmp, ok := encPools[pool].Get().(*[sz]byte)
@@ -136,8 +153,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm2MB(dst, src, tmp)
+		d = encodeBlockLarge2M(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	case len(src) > 64<<10:
 		const sz, pool = 65536, 2
 		tmp, ok := encPools[pool].Get().(*[sz]byte)
@@ -145,8 +163,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm512K(dst, src, tmp)
+		d = encodeBlockLarge512K(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	case len(src) > 16<<10:
 		const sz, pool = 16384, 3
 		tmp, ok := encPools[pool].Get().(*[sz]byte)
@@ -154,8 +173,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm64K(dst, src, tmp)
+		d = encodeBlockAsm64K(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	case len(src) > 4<<10:
 		const sz, pool = 8192, 4
 		tmp, ok := encPools[pool].Get().(*[sz]byte)
@@ -163,8 +183,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm16K(dst, src, tmp)
+		d = encodeBlockAsm16K(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	case len(src) > 1<<10:
 		const sz, pool = 2048, 5
 		tmp, ok := encPools[pool].Get().(*[sz]byte)
@@ -172,8 +193,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm4K(dst, src, tmp)
+		d = encodeBlockAsm4K(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	case len(src) > minNonLiteralBlockSize:
 		const sz, pool = 1024, 6
 		tmp, ok := encPools[pool].Get().(*[sz]byte)
@@ -181,8 +203,9 @@ func encodeBlock(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encPools[pool].Put(tmp)
-		return encodeBlockAsm1K(dst, src, tmp)
+		d = encodeBlockAsm1K(dst, src, tmp)
+		encPools[pool].Put(tmp)
+		return d
 	}
 	return 0
 }
@@ -207,8 +230,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm(dst, src, tmp)
+		d = encodeBetterBlockAsm(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	case len(src) > 512<<10:
 		const sz, pool = 589824, 0
 		tmp, ok := encBetterPools[pool].Get().(*[sz]byte)
@@ -216,8 +240,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm2MB(dst, src, tmp)
+		d = encodeBetterBlockAsm2MB(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	case len(src) > 64<<10:
 		const sz, pool = 294912, 1
 		tmp, ok := encBetterPools[pool].Get().(*[sz]byte)
@@ -225,8 +250,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm512K(dst, src, tmp)
+		d = encodeBetterBlockAsm512K(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	case len(src) > 16<<10:
 		const sz, pool = 73728, 2
 		tmp, ok := encBetterPools[pool].Get().(*[sz]byte)
@@ -234,8 +260,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm64K(dst, src, tmp)
+		d = encodeBetterBlockAsm64K(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	case len(src) > 4<<10:
 		const sz, pool = 36864, 3
 		tmp, ok := encBetterPools[pool].Get().(*[sz]byte)
@@ -243,8 +270,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm16K(dst, src, tmp)
+		d = encodeBetterBlockAsm16K(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	case len(src) > 1<<10:
 		const sz, pool = 10240, 4
 		tmp, ok := encBetterPools[pool].Get().(*[sz]byte)
@@ -252,8 +280,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm4K(dst, src, tmp)
+		d = encodeBetterBlockAsm4K(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	case len(src) > minNonLiteralBlockSize:
 		const sz, pool = 4608, 5
 		tmp, ok := encBetterPools[pool].Get().(*[sz]byte)
@@ -261,8 +290,9 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			tmp = &[sz]byte{}
 		}
 		race.WriteSlice(tmp[:])
-		defer encBetterPools[pool].Put(tmp)
-		return encodeBetterBlockAsm1K(dst, src, tmp)
+		d = encodeBetterBlockAsm1K(dst, src, tmp)
+		encBetterPools[pool].Put(tmp)
+		return d
 	}
 	return 0
 }

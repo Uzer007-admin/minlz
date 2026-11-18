@@ -16,6 +16,20 @@ package main
 
 //go:generate go run gen.go -out ../asm_amd64.s -stubs ../asm_amd64.go -pkg=minlz
 //go:generate gofmt -w ../asm_amd64.go
+//go:generate go run gen.go -large-cold -out ../encode_large_cold_amd64.s -stubs ../encode_large_cold_amd64.go -pkg=minlz
+//go:generate go run postopt.go augment.go extend.go -mode cold -file ../encode_large_cold_amd64.s
+//go:generate gofmt -w ../encode_large_cold_amd64.go
+//go:generate go run gen.go -stack16 -out ../encode_short16k_amd64.s -stubs ../encode_short16k_amd64.go -pkg=minlz
+//go:generate gofmt -w ../encode_short16k_amd64.go
+//go:generate go run gen.go -prefix-table -prefix-window -out ../encode_prefix_amd64.s -stubs ../encode_prefix_amd64.go -pkg=minlz
+//go:generate go run postopt.go augment.go extend.go -mode prefix -file ../encode_prefix_amd64.s
+//go:generate gofmt -w ../encode_prefix_amd64.go
+//go:generate go run gen.go -short-dispatch -out ../encode_tiny_dispatch_amd64.s -pkg=minlz
+//go:generate go run gen.go -short4k -out ../encode_short4k_amd64.s -pkg=minlz
+//go:generate go run gen.go -short4k-sse2 -out ../encode_short4k_sse_amd64.s -pkg=minlz
+//go:generate go run gen.go -short1k -out ../encode_short1k_amd64.s -pkg=minlz
+//go:generate go run gen.go -short -out ../encode_short_amd64.s -pkg=minlz
+//go:generate go run postopt.go augment.go extend.go -mode whole -file ../encode_whole256_amd64.s
 // avo appends the -arch suffix to -out itself, so ../asm.s is written as
 // ../asm_arm64.s. -stubs takes no such suffix and is spelled in full. The
 // asymmetry is avo's, not a typo: spelling -out with the suffix already on it
@@ -46,10 +60,24 @@ const (
 
 // genArm64 restricts generation to the subset that the avo arm64 lowering can
 // reproduce, and swaps the SSE memmove helpers for scalar ones.
+var genStack16 = flag.Bool("stack16", false, "generate the exact 4097..16384-byte stack-scratch kernel")
+var genLargeCold = flag.Bool("large-cold", false, "generate AVX2-dispatched compact Fastest search loops for blocks above 64 KiB")
+var prefixVectorMask Mem
+var prefixVectorDelta Mem
+var genWindow = flag.Bool("prefix-window", false, "exact table-recency windows for wide prefix probes")
+var genPrefix = flag.Bool("prefix-table", false, "experimental full prefix with position high, prefix low")
 var genArm64 = flag.Bool("arm64gen", false, "generate only the arm64-lowerable subset, with scalar memmove")
+var genShortDispatch = flag.Bool("short-dispatch", false, "generate the amd64 ABI0 small-block tail dispatcher")
+var genShort4KSSE2 = flag.Bool("short4k-sse2", false, "generate the SSE2 fallback kernel for 1025..4096-byte inputs")
+var genShort4K = flag.Bool("short4k", false, "generate the amd64 stack-scratch Fastest encoder for 1025..4096-byte inputs")
+var genShort1K = flag.Bool("short1k", false, "generate the amd64 stack-scratch Fastest encoder for 257..1024-byte inputs")
+var genShort = flag.Bool("short", false, "generate the amd64 stack-scratch Fastest encoder")
 
 func main() {
 	flag.Parse()
+	if *genShort4KSSE2 {
+		*genShort4K = true
+	}
 	Constraint(buildtags.Not("appengine").ToConstraint())
 	Constraint(buildtags.Not("noasm").ToConstraint())
 	Constraint(buildtags.Term("gc").ToConstraint())
@@ -63,6 +91,128 @@ func main() {
 		inputMargin:  17,
 		skipOutput:   false,
 		scalarMove:   *genArm64,
+	}
+	if *genShortDispatch {
+		if *genArm64 || *genShort || *genShort1K || *genShort4K {
+			panic("select the amd64 short dispatcher by itself")
+		}
+		TEXT("encodeBlockTinyAsm", NOSPLIT|NOFRAME, "func(dst, src []byte) int")
+		Doc("Tail-dispatches to identical ABI0 slice arguments and int result.",
+			"The Go race wrapper can be inlined into Encode and TryEncode.")
+		Pragma("noescape")
+		// External tail jumps terminate this function; they are not local CFG edges.
+		n := Load(Param("src").Len(), GP64())
+		CMPQ(n, U32(256))
+		JG(LabelRef("medium"))
+		// nextS=4 and sLimit=len(src)-17. No search can start through 21.
+		CMPQ(n, U8(21))
+		JLE(LabelRef("stored"))
+		Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·encodeBlockShort"}, Base: reg.StaticBase}}, IsTerminal: true})
+		Label("medium")
+		CMPQ(n, U32(1024))
+		JG(LabelRef("large"))
+		Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·encodeBlockShort1K"}, Base: reg.StaticBase}}, IsTerminal: true})
+		Label("large")
+		CMPQ(n, U32(4096))
+		JG(LabelRef("sixteen"))
+		Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·encodeBlockShort4K"}, Base: reg.StaticBase}}, IsTerminal: true})
+		Label("sixteen")
+		Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·encodeBlockShort16K"}, Base: reg.StaticBase}}, IsTerminal: true})
+		Label("stored")
+		ri, err := ReturnIndex(0).Resolve()
+		if err != nil {
+			panic(err)
+		}
+		MOVQ(U32(0), ri.Addr)
+		RET()
+		Generate()
+		return
+	}
+	if (*genShort && *genShort1K) || (*genShort && *genShort4K) || (*genShort1K && *genShort4K) {
+		panic("select exactly one short encoder")
+	}
+	if *genShort || *genShort1K || *genShort4K {
+		if *genArm64 {
+			panic("short encoder is amd64-only")
+		}
+		o.stackTmp = true
+		o.byteOffsets = *genShort
+		o.hash32 = true
+		o.fastOpts = fastOpts{match8: false, fuselits: true, checkRepeats: true, checkBack: true, skipOne: false, incLoop: 3, minSizeLog: 5}
+		if *genShort4K {
+			if *genShort4KSSE2 {
+				o.genEncodeBlockAsm("encodeBlockShort4KSSE2", 10, 5, 4, 4<<10)
+			} else {
+				// Keep the common <=1 KiB dispatcher byte-for-byte unchanged.
+				// This frameless private dispatcher is reached only for 1025..4096 bytes.
+				TEXT("encodeBlockShort4K", NOSPLIT|NOFRAME, "func(dst,src []byte)int")
+				Pragma("noescape")
+				CMPB(Mem{Symbol: Symbol{Name: "·hasAVX2"}, Base: reg.StaticBase}, U8(0))
+				JE(LabelRef("use_sse2"))
+				Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·encodeBlockShort4KAVX2"}, Base: reg.StaticBase}}, IsTerminal: true})
+				Label("use_sse2")
+				Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·encodeBlockShort4KSSE2"}, Base: reg.StaticBase}}, IsTerminal: true})
+				o.genEncodeBlockAsm("encodeBlockShort4KAVX2", 10, 5, 4, 4<<10)
+
+			}
+		} else if *genShort1K {
+			o.genEncodeBlockAsm("encodeBlockShort1K", 9, 4, 4, 1<<10)
+		} else {
+			o.genEncodeBlockAsm("encodeBlockShort", 9, 4, 4, 1<<10)
+		}
+		Generate()
+		return
+	}
+
+	if *genStack16 {
+		if *genArm64 {
+			panic("stack16 is amd64-only")
+		}
+		o.stackTmp = true
+		o.fastOpts = fastOpts{match8: false, fuselits: true, checkRepeats: true, checkBack: true, incLoop: 3, minSizeLog: 5}
+		o.genEncodeBlockAsm("encodeBlockShort16K", 12, 5, 5, 16<<10)
+		Generate()
+		return
+	}
+	if *genLargeCold {
+		if *genArm64 {
+			panic("large-cold is amd64-only")
+		}
+		o.fastOpts = fastOpts{match8: false, fuselits: true, checkRepeats: true, checkBack: true, incLoop: 4, minSizeLog: 5}
+		for _, k := range []struct {
+			dispatch, cold, original string
+			bits, max, table         int
+		}{
+			{"encodeBlockLarge8M", "encodeBlockCold8M", "encodeBlockAsm", 15, 8 << 20, 131072},
+			{"encodeBlockLarge2M", "encodeBlockCold2M", "encodeBlockAsm2MB", 15, 2 << 20, 131072},
+			{"encodeBlockLarge512K", "encodeBlockCold512K", "encodeBlockAsm512K", 14, 512 << 10, 65536},
+		} {
+			TEXT(k.dispatch, NOSPLIT|NOFRAME, fmt.Sprintf("func(dst,src []byte,tmp *[%d]byte)int", k.table))
+			Pragma("noescape")
+			Doc("Preserves the normal kernel on CPUs without AVX2.", "Uses the same ABI0 slice arguments, scratch table and result.")
+			CMPB(Mem{Symbol: Symbol{Name: "·hasAVX2"}, Base: reg.StaticBase}, U8(0))
+			JE(LabelRef("normal_" + k.dispatch))
+			Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·" + k.cold}, Base: reg.StaticBase}}, IsTerminal: true})
+			Label("normal_" + k.dispatch)
+			Instruction(&ir.Instruction{Opcode: "JMP", Operands: []Op{Mem{Symbol: Symbol{Name: "·" + k.original}, Base: reg.StaticBase}}, IsTerminal: true})
+			o.genEncodeBlockAsm(k.cold, k.bits, 6, 6, k.max)
+		}
+		Generate()
+		return
+	}
+	if *genPrefix {
+		prefixVectorMask = GLOBL("prefixVectorMask", RODATA|NOPTR)
+		DATA(0, U64(0x0403020103020100))
+		DATA(8, U64(0x8080808005040302))
+		prefixVectorDelta = GLOBL("prefixVectorDelta", RODATA|NOPTR)
+		DATA(0, U64(0x0000000100000000))
+		DATA(8, U64(0x0000000300000002))
+		o.fastOpts = fastOpts{match8: false, fuselits: true, checkRepeats: true, checkBack: true, incLoop: 4, minSizeLog: 5}
+		o.genEncodeBlockAsm("encodeBlockPrefix8M", 15, 6, 6, 8<<20)
+		o.genEncodeBlockAsm("encodeBlockPrefix2M", 15, 6, 6, 2<<20)
+		o.genEncodeBlockAsm("encodeBlockPrefix512K", 14, 6, 6, 512<<10)
+		Generate()
+		return
 	}
 
 	// 16 bit hash table has too big of a speed impact.
@@ -199,9 +349,11 @@ func assertOffset(off int, fn func(ok LabelRef)) {
 }
 
 type regTable struct {
-	r     reg.Register
-	disp  int
-	scale uint8
+	prefix    bool
+	prefixSrc reg.GPVirtual
+	r         reg.Register
+	disp      int
+	scale     uint8
 }
 
 func (r regTable) Idx(idx reg.GPVirtual) Mem {
@@ -211,9 +363,11 @@ func (r regTable) Idx(idx reg.GPVirtual) Mem {
 func (r regTable) LoadIdx(idx, dst reg.GPVirtual) {
 	switch r.scale {
 	case 1:
-		MOVBQZX(Mem{Base: r.r, Index: idx, Scale: r.scale, Disp: r.disp}, dst.As32())
+		MOVBLZX(Mem{Base: r.r, Index: idx, Scale: r.scale, Disp: r.disp}, dst.As32())
 	case 2:
 		MOVWLZX(Mem{Base: r.r, Index: idx, Scale: r.scale, Disp: r.disp}, dst.As32())
+	case 8:
+		MOVQ(Mem{Base: r.r, Index: idx, Scale: 8, Disp: r.disp}, dst.As64())
 	case 4:
 		MOVL(Mem{Base: r.r, Index: idx, Scale: r.scale, Disp: r.disp}, dst.As32())
 	default:
@@ -221,7 +375,23 @@ func (r regTable) LoadIdx(idx, dst reg.GPVirtual) {
 	}
 }
 
+func (r regTable) SavePrefix(val, idx, prefix reg.GPVirtual, shift uint8) {
+	if shift != 0 {
+		p := GP64()
+		MOVQ(prefix.As64(), p)
+		SHRQ(U8(shift), p)
+		prefix = p
+	}
+	MOVL(prefix.As32(), Mem{Base: r.r, Index: idx, Scale: 8, Disp: r.disp})
+	MOVL(val.As32(), Mem{Base: r.r, Index: idx, Scale: 8, Disp: r.disp + 4})
+}
 func (r regTable) SaveIdx(val, idx reg.GPVirtual) {
+	if r.prefix {
+		p := GP32()
+		MOVL(Mem{Base: r.prefixSrc, Index: val, Scale: 1}, p)
+		r.SavePrefix(val, idx, p, 0)
+		return
+	}
 	switch r.scale {
 	case 1:
 		MOVB(val.As8(), Mem{Base: r.r, Index: idx, Scale: r.scale, Disp: r.disp})
@@ -242,6 +412,14 @@ func reloadTables(param string, tables ...*regTable) {
 }
 
 type options struct {
+	// The 4 KiB hot AVX2 kernel retains its original layout.
+	integratedSSE bool
+
+	literal128    bool
+	wideMatch     bool
+	hash32        bool // Equivalent 32-bit hash4 lowering for the small-block kernels.
+	byteOffsets   bool // 512 uint8 positions, valid only for inputs <=256 bytes.
+	stackTmp      bool // Use pointer-free assembly locals instead of a tmp argument.
 	bmi1          bool
 	bmi2          bool
 	skipOutput    bool
@@ -288,6 +466,8 @@ type fastOpts struct {
 }
 
 func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, maxLen int) {
+	coldLayout := (*genLargeCold || *genPrefix) && !*genArm64 && !o.stackTmp && !o.match8 && maxLen > 65536
+	var coldFns []func()
 	dstTxt := "dst, "
 	if o.skipOutput {
 		dstTxt = ""
@@ -298,6 +478,20 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 		offsetBytes = 2
 	}
 
+	if o.stackTmp && o.byteOffsets {
+		offsetBytes = 1
+	} // Caller limits this kernel to at most 256 input bytes.
+	prefixMode := *genPrefix
+	windowMode := prefixMode && *genWindow && maxLen > 2<<20
+	scalarPrefix := prefixMode && maxLen > 2<<20 && !windowMode
+	fastLoop := prefixMode
+	var repeatPtr reg.GPVirtual
+	if fastLoop {
+		repeatPtr = GP64()
+	}
+	if prefixMode {
+		offsetBytes = 8
+	}
 	tableSize := int(offsetBytes) * (1 << tableBits)
 	// Memzero needs at least 128 bytes.
 	if tableSize < 128 {
@@ -305,12 +499,22 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 	}
 
 	arrPtr := fmt.Sprintf(",tmp *[%d]byte", tableSize)
+	if o.stackTmp {
+		arrPtr = ""
+	}
 	TEXT(name, 0, "func("+dstTxt+"src []byte"+arrPtr+") int")
+	inputMax := maxLen
+	if o.stackTmp && o.byteOffsets {
+		inputMax = 256
+	}
 	Doc(name+" encodes a non-empty src to a guaranteed-large-enough dst.",
-		fmt.Sprintf("Maximum input %d bytes.", maxLen),
+		fmt.Sprintf("Maximum input %d bytes.", inputMax),
 		"It assumes that the varint-encoded length of the decompressed bytes has already been written.", "")
 	Pragma("noescape")
 
+	o.literal128 = !*genArm64 && !o.match8
+	o.wideMatch = !*genArm64 && !o.match8 && maxLen > 1024
+	o.integratedSSE = !*genArm64 && (!o.stackTmp || *genShort4KSSE2 || *genStack16)
 	o.maxLen = maxLen
 	o.maxOffset = maxLen - 1
 	literalMaxOverhead := maxLitOverheadFor(maxLen)
@@ -334,19 +538,43 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 	dstLimitPtrQ := AllocLocal(8)
 
 	// sLimitL is when to stop looking for offset/length copies.
-	sLimitL := AllocLocal(8)
+	var sLimitL Op
+	if o.stackTmp {
+		sLimitL = GP64()
+	} else {
+		sLimitL = AllocLocal(8)
+	}
 
 	// nextEmitL keeps track of the point we have emitted to.
-	nextEmitL := AllocLocal(8)
+	var nextEmitL Op
+	if o.stackTmp || fastLoop {
+		nextEmitL = GP64()
+	} else {
+		nextEmitL = AllocLocal(8)
+	}
 
 	// Repeat stores the last match offset.
 	repeatL := AllocLocal(8)
 
-	// nextSTempL keeps nextS while other functions are being called.
-	nextSTempL := AllocLocal(8)
+	// Keep the next probe in a register across the three candidate checks.
+	// The arm64 lowering retains its existing stack-slot arrangement.
+	var nextSTempL Op
+	if !*genArm64 {
+		nextSTempL = GP64()
+	} else {
+		nextSTempL = AllocLocal(8)
+	}
 
 	// Load pointer to temp table
-	table := regTable{r: Load(Param("tmp"), GP64()), scale: offsetBytes}
+	table := regTable{scale: offsetBytes, prefix: prefixMode}
+	if o.stackTmp {
+		table.r = GP64()
+		LEAQ(AllocLocal(tableSize+64), table.r)
+		ADDQ(U8(63), table.r)
+		ANDQ(I8(-64), table.r)
+	} else {
+		table.r = Load(Param("tmp"), GP64())
+	}
 
 	dst := GP64()
 	if !o.skipOutput {
@@ -367,14 +595,69 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 	}
 	srcBaseQ := srcBaseBasic.Addr
 
-	// Zero table
-	{
+	// Every empty slot represents src[0], including its exact four-byte prefix.
+	if !*genArm64 && o.stackTmp && o.byteOffsets && tableSize == 512 {
+		// Clear the same 512 bytes without the four-trip initialization loop.
+
+		CMPB(Mem{Symbol: Symbol{Name: "·hasAVX2"}, Base: reg.StaticBase}, U8(0))
+		JE(LabelRef("small_zero_sse_" + name))
+		z := YMM()
+		VPXOR(z, z, z)
+		for i := 0; i < 512; i += 32 {
+			VMOVDQU(z, Mem{Base: table.r, Disp: i})
+		}
+		VZEROUPPER()
+		JMP(LabelRef("small_zero_done_" + name))
+		Label("small_zero_sse_" + name)
+
+		z128 := XMM()
+		PXOR(z128, z128)
+		for i := 0; i < 512; i += 16 {
+			MOVOU(z128, Mem{Base: table.r, Disp: i})
+		}
+		Label("small_zero_done_" + name)
+
+	} else {
+		var initial reg.GPVirtual
+		if prefixMode {
+			p := GP64()
+			MOVQ(srcBaseQ, p)
+			initial = GP64()
+			MOVL(Mem{Base: p}, initial.As32())
+		}
 		iReg := GP64()
 		MOVQ(U32(tableSize/8/16), iReg)
 		tablePtr := GP64()
 		MOVQ(table.r, tablePtr)
+		if !*genArm64 && (!o.stackTmp || *genStack16) && tableSize >= 8192 && !o.match8 {
+			CMPB(Mem{Symbol: Symbol{Name: "·hasAVX2"}, Base: reg.StaticBase}, U8(0))
+			JE(LabelRef("zero_scalar_" + name))
+			z := YMM()
+			if prefixMode {
+				p := XMM()
+				MOVQ(initial, p)
+				VPBROADCASTQ(p, z)
+			} else {
+				VPXOR(z, z, z)
+			}
+			Label("zero_avx2_" + name)
+			for i := 0; i < 4; i++ {
+				VMOVDQU(z, Mem{Base: tablePtr, Disp: i * 32})
+			}
+			ADDQ(U8(128), tablePtr)
+			DECQ(iReg)
+			JNZ(LabelRef("zero_avx2_" + name))
+			VZEROUPPER()
+			JMP(LabelRef("zero_done_" + name))
+			Label("zero_scalar_" + name)
+		}
 		zeroXmm := XMM()
-		PXOR(zeroXmm, zeroXmm)
+		if prefixMode {
+			MOVQ(initial, zeroXmm)
+			PUNPCKLQDQ(zeroXmm, zeroXmm)
+		} else {
+			PXOR(zeroXmm, zeroXmm)
+		}
 
 		Label("zero_loop_" + name)
 		for i := 0; i < 8; i++ {
@@ -383,8 +666,18 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 		ADDQ(U8(16*8), tablePtr)
 		DECQ(iReg)
 		JNZ(LabelRef("zero_loop_" + name))
+		if !*genArm64 && (!o.stackTmp || *genStack16) && tableSize >= 8192 && !o.match8 {
+			Label("zero_done_" + name)
+		}
 	}
 
+	var windowLimitL, windowClampL Mem
+	if windowMode {
+		windowLimitL = AllocLocal(8)
+		windowClampL = AllocLocal(8)
+		MOVQ(U32(maxOffset-2), windowLimitL)
+		MOVQ(U32(0), windowClampL)
+	}
 	match8 := o.match8
 	fuselits := o.fuselits
 	checkRepeats := o.checkRepeats
@@ -442,7 +735,7 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			panic(err)
 		}
 		MOVQ(U32(0), ri.Addr)
-		if o.avx2 {
+		if o.avx2 || prefixMode {
 			VZEROUPPER()
 		}
 		RET()
@@ -461,10 +754,22 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 	MOVQ(q(s), repeatL)
 
 	src := GP64()
+	table.prefixSrc = src
 	Load(Param("src").Base(), src)
+	if fastLoop {
+		LEAQ(Mem{Base: src, Disp: -1}, repeatPtr)
+	}
 
 	// Load cv
+	if o.stackTmp {
+		PCALIGN(Imm(32))
+	}
+	var searchHasher hashGen
 	Label("search_loop_" + name)
+	if prefixMode {
+		searchHasher = hashN(o, hashBytes, tableBits)
+		Label("search_fast_" + name)
+	}
 	candidate := GP32()
 	{
 		assert(func(ok LabelRef) {
@@ -492,16 +797,112 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			CMPQ(q(nextS.As32()), sLimitL)
 			JAE(LabelRef("emit_remainder_" + name))
 		}
+
+		if windowMode {
+			CMPL(s, windowLimitL)
+			JBE(LabelRef("window_ready_" + name))
+			ptr, count := GP64(), GP32()
+			MOVQ(table.r, ptr)
+			MOVL(U32(tableSize/32), count)
+			low, v, hi := YMM(), YMM(), XMM()
+			VPCMPEQD(low, low, low)
+			Label("window_scan_" + name)
+			VMOVDQU(Mem{Base: ptr}, v)
+			VPSHUFD(U8(0xdd), v, v)
+			VPMINUD(v, low, low)
+			ADDQ(U8(32), ptr)
+			DECL(count)
+			JNZ(LabelRef("window_scan_" + name))
+			VEXTRACTI128(U8(1), low, hi)
+			VPMINUD(hi, low.AsX(), low.AsX())
+			VPSHUFD(U8(0x4e), low.AsX(), hi)
+			VPMINUD(hi, low.AsX(), low.AsX())
+			VPSHUFD(U8(0xb1), low.AsX(), hi)
+			VPMINUD(hi, low.AsX(), low.AsX())
+			least := GP32()
+			VMOVD(low.AsX(), least)
+			LEAL(Mem{Base: least, Disp: maxOffset - 2}, least)
+			CMPL(least, s)
+			JAE(LabelRef("window_proven_" + name))
+			MOVQ(U32(1), windowClampL)
+			LEAL(Mem{Base: s, Disp: 65536}, least)
+			MOVQ(q(least), windowLimitL)
+			JMP(LabelRef("window_ready_" + name))
+			Label("window_proven_" + name)
+			MOVQ(U32(0), windowClampL)
+			MOVQ(q(least), windowLimitL)
+			Label("window_ready_" + name)
+		}
+
 		MOVQ(Mem{Base: src, Index: s, Scale: 1}, cv)
+		var gp0, gp1 reg.GPVirtual
+		if scalarPrefix {
+			gp0 = GP64()
+			gp1 = GP64()
+		}
+		var prefixVec, c0, c1, c2, entry01, entry2 reg.VecVirtual
+		if prefixMode && !scalarPrefix {
+			prefixVec = XMM()
+			c0 = XMM()
+			c1 = XMM()
+			c2 = XMM()
+			VMOVQ(cv, prefixVec)
+			VPSHUFB(prefixVectorMask, prefixVec, prefixVec)
+			positions := XMM()
+			VMOVD(s, positions)
+			VPSHUFD(U8(0), positions, positions)
+			VPADDD(prefixVectorDelta, positions, positions)
+			entry01 = XMM()
+			entry2 = XMM()
+			VPUNPCKLDQ(positions, prefixVec, entry01)
+			VPUNPCKHDQ(positions, prefixVec, entry2)
+
+		}
+		saveVec := func(pos, idx reg.GPVirtual, which int) {
+			m := Mem{Base: table.r, Index: idx, Scale: 8}
+			if which == 0 {
+				VMOVQ(entry01, m)
+			} else if which == 1 {
+				VPEXTRQ(U8(1), entry01, m)
+			} else {
+				VMOVQ(entry2, m)
+			}
+		}
+		if scalarPrefix {
+			saveVec = func(pos, idx reg.GPVirtual, which int) {
+				m := Mem{Base: table.r, Index: idx, Scale: 8}
+				value := GP32()
+				MOVL(Mem{Base: src, Index: s, Scale: 1, Disp: which}, value)
+				MOVL(value, m)
+				if which == 0 {
+					MOVL(s, m.Offset(4))
+				} else {
+					sp := GP32()
+					LEAL(Mem{Base: s, Disp: which}, sp)
+					MOVL(sp, m.Offset(4))
+				}
+			}
+		}
 
 		// Check if offset exceeds max
 		var ccCounter int
 		var minPos reg.GPVirtual
 		if o.maxOffset > maxOffset {
 			minPos = GP64()
-			LEAL(Mem{Base: s, Disp: -maxOffset + 2}, minPos.As32())
+			if !windowMode {
+				LEAL(Mem{Base: s, Disp: -maxOffset + 2}, minPos.As32())
+				if prefixMode {
+					MOVLQSX(minPos.As32(), minPos)
+					SHLQ(U8(32), minPos)
+				}
+			}
 		}
 		checkCandidate := func(cand reg.GPVirtual, ifok func()) {
+			if prefixMode {
+				CMPL(cand.As32(), cv.As32())
+				ifok()
+				return
+			}
 			if o.maxOffset <= maxOffset {
 				ifok()
 				return
@@ -532,7 +933,10 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 		MOVQ(q(nextS.As32()), nextSTempL)
 
 		candidate2 := GP32()
-		hasher := hashN(o, hashBytes, tableBits)
+		hasher := searchHasher
+		if !prefixMode {
+			hasher = hashN(o, hashBytes, tableBits)
+		}
 		{
 			hash0, hash1 := GP64(), GP64()
 			MOVQ(cv, hash0)
@@ -550,7 +954,15 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 					JB(ok)
 				})
 			}
-			table.LoadIdx(hash0, candidate)
+			if prefixMode {
+				if scalarPrefix {
+					MOVQ(Mem{Base: table.r, Index: hash0, Scale: 8}, gp0)
+				} else {
+					VMOVQ(Mem{Base: table.r, Index: hash0, Scale: 8}, c0)
+				}
+			} else {
+				table.LoadIdx(hash0, candidate)
+			}
 			assert(func(ok LabelRef) {
 				CMPQ(hash0, U32(tableSize))
 				JB(ok)
@@ -561,13 +973,36 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			// store->load dependency (and a hash0==hash1 collision corner case)
 			// for a sub-50-byte gain; reading both first is friendlier to OoO.
 			if !skipOne {
-				table.LoadIdx(hash1, candidate2)
+				if prefixMode {
+					if scalarPrefix {
+						MOVQ(Mem{Base: table.r, Index: hash1, Scale: 8}, gp1)
+					} else {
+						VMOVQ(Mem{Base: table.r, Index: hash1, Scale: 8}, c1)
+					}
+				} else {
+					table.LoadIdx(hash1, candidate2)
+				}
 			}
-			table.SaveIdx(s, hash0)
+			// Only the medium tables benefit from these hints in the mixed tests.
+			if !*genArm64 && !o.stackTmp && !o.match8 && maxLen >= 16<<10 && maxLen <= 64<<10 {
+				PREFETCHT0(Mem{Base: src, Index: candidate, Scale: 1})
+				PREFETCHT0(Mem{Base: src, Index: candidate2, Scale: 1})
+			}
+			if prefixMode {
+				saveVec(s, hash0, 0)
+			} else {
+				table.SaveIdx(s, hash0)
+			}
 			if !skipOne {
 				sp1 := GP32()
-				LEAL(Mem{Base: s, Disp: 1}, sp1)
-				table.SaveIdx(sp1, hash1)
+				if !prefixMode {
+					LEAL(Mem{Base: s, Disp: 1}, sp1)
+				}
+				if prefixMode {
+					saveVec(sp1, hash1, 1)
+				} else {
+					table.SaveIdx(sp1, hash1)
+				}
 			}
 		}
 
@@ -596,241 +1031,446 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			{
 				// rep = s - repeat
 				rep := GP32()
-				MOVL(s, rep)
-				SUBQ(repeatL, q(rep)) // rep = s - repeat
+				if !fastLoop {
+					MOVL(s, rep)
+					SUBQ(repeatL, q(rep))
+				}
 
 				// if uint32(cv>>(checkRep*8)) == load32(src, s-repeat+checkRep) {
-				left, right := GP64(), GP64()
-				MOVL(Mem{Base: src, Index: rep, Disp: checkRep, Scale: 1}, right.As32())
-				MOVQ(cv, left)
-				SHRQ(U8(checkRep*8), left)
-				CMPL(left.As32(), right.As32())
+				if fastLoop {
+					left := GP64()
+					MOVQ(cv, left)
+					SHRQ(U8(checkRep*8), left)
+					CMPL(Mem{Base: repeatPtr, Index: s, Scale: 1, Disp: checkRep}, left.As32())
+				} else if !*genArm64 && !o.match8 && maxLen > 2<<20 {
+					left := GP64()
+					MOVQ(cv, left)
+					SHRQ(U8(checkRep*8), left)
+					CMPL(Mem{Base: src, Index: rep, Disp: checkRep, Scale: 1}, left.As32())
+				} else {
+					left, right := GP64(), GP64()
+					MOVL(Mem{Base: src, Index: rep, Disp: checkRep, Scale: 1}, right.As32())
+					MOVQ(cv, left)
+					SHRQ(U8(checkRep*8), left)
+					CMPL(left.As32(), right.As32())
+				}
 				// BAIL, no repeat.
-				JNE(LabelRef("no_repeat_found_" + name))
-			}
-			// base = s + checkRep
-			base := GP32()
-			LEAL(Mem{Base: s, Disp: checkRep}, base)
-
-			// nextEmit before repeat.
-			nextEmit := GP32()
-			MOVQ(nextEmitL, q(nextEmit))
-
-			// Extend back
-			if checkBack {
-				i := GP32()
-				MOVL(base, i)
-				SUBQ(repeatL, q(i))
-				JZ(LabelRef("repeat_extend_back_end_" + name))
-
-				Label("repeat_extend_back_loop_" + name)
-				// if base <= nextemit {exit}
-				CMPL(base.As32(), nextEmit)
-				JBE(LabelRef("repeat_extend_back_end_" + name))
-				// if src[i-1] == src[base-1]
-				tmp, tmp2 := GP64(), GP64()
-				MOVB(Mem{Base: src, Index: i, Scale: 1, Disp: -1}, tmp.As8())
-				MOVB(Mem{Base: src, Index: base, Scale: 1, Disp: -1}, tmp2.As8())
-				CMPB(tmp.As8(), tmp2.As8())
-				JNE(LabelRef("repeat_extend_back_end_" + name))
-				LEAL(Mem{Base: base, Disp: -1}, base)
-				DECL(i)
-				JNZ(LabelRef("repeat_extend_back_loop_" + name))
-			}
-			Label("repeat_extend_back_end_" + name)
-
-			litLen, nextEmit := GP64(), GP64()
-			MOVL(base.As32(), litLen.As32())
-			MOVQ(nextEmitL, q(nextEmit.As32()))
-			SUBL(nextEmit.As32(), litLen.As32())
-			checkDst(0, litLen)
-
-			// Base is now at start. Emit until base.
-			// d += emitLiteral(dst[d:], src[nextEmit:base])
-			litSrc := GP64()
-			LEAQ(Mem{Base: src, Index: nextEmit, Scale: 1}, litSrc)
-			o.emitLiteral("repeat_emit_lits_"+name, litLen, nil, dst, litSrc, LabelRef("repeat_emit_lits_end_"+name), true)
-			Label("repeat_emit_lits_end_" + name)
-
-			// Extend forward
-			{
-				// s += 4 + checkRep
-				ADDL(U8(4+checkRep), s)
-
-				if true {
-					// candidate := s - repeat + 4 + checkRep
-					MOVL(s, candidate)
-					SUBQ(repeatL, q(candidate)) // candidate = s - repeat
-
-					// srcLeft = len(src) - s
-					srcLeft := GP64()
-					MOVQ(lenSrcQ, srcLeft)
-					SUBL(s, srcLeft.As32())
-					assert(func(ok LabelRef) {
-						// if srcleft < maxint32: ok
-						CMPQ(srcLeft, U32(0x7fffffff))
-						JB(ok)
-					})
-					// Forward address
-					forwardStart := GP64()
-					LEAQ(Mem{Base: src, Index: s, Scale: 1}, forwardStart)
-					// End address
-					backStart := GP64()
-					LEAQ(Mem{Base: src, Index: candidate, Scale: 1}, backStart)
-
-					length := o.matchLen("repeat_extend_"+name, forwardStart, backStart, srcLeft, nil, LabelRef("repeat_extend_forward_end_"+name))
-					forwardStart, backStart, srcLeft = nil, nil, nil
-					PCALIGN(Imm(16))
-					Label("repeat_extend_forward_end_" + name)
-					// s+= length
-					ADDL(length.As32(), s)
+				if coldLayout {
+					if prefixMode {
+						JEQ(LabelRef("prefix_repeat_prepare_" + name))
+						coldFns = append(coldFns, func() { Label("prefix_repeat_prepare_" + name); VZEROUPPER(); JMP(LabelRef("repeat_found_" + name)) })
+					} else {
+						JEQ(LabelRef("repeat_found_" + name))
+					}
+				} else {
+					JNE(LabelRef("no_repeat_found_" + name))
 				}
 			}
-			// Emit
-			{
-				// length = s-base
-				length := GP32()
-				MOVL(s, length)
-				SUBL(base.As32(), length) // length = s - base
+			repeatBody := func() {
+				if coldLayout {
+					Label("repeat_found_" + name)
+				}
+				// base = s + checkRep
+				base := GP32()
+				LEAL(Mem{Base: s, Disp: checkRep}, base)
 
-				offsetVal := GP32()
-				MOVQ(repeatL, q(offsetVal))
+				// nextEmit before repeat.
+				nextEmit := GP32()
+				MOVQ(nextEmitL, q(nextEmit))
 
-				// Emit as repeat...
-				o.emitRepeat("match_repeat_"+name, length, nil, dst, LabelRef("repeat_end_emit_"+name))
+				// Extend back
+				if checkBack {
+					i := GP32()
+					MOVL(base, i)
+					SUBQ(repeatL, q(i))
+					JZ(LabelRef("repeat_extend_back_end_" + name))
 
-				Label("repeat_end_emit_" + name)
-				// Store new dst and nextEmit
-				MOVQ(q(s), nextEmitL)
+					Label("repeat_extend_back_loop_" + name)
+					// if base <= nextemit {exit}
+					CMPL(base.As32(), nextEmit)
+					JBE(LabelRef("repeat_extend_back_end_" + name))
+					// if src[i-1] == src[base-1]
+					tmp, tmp2 := GP64(), GP64()
+					MOVB(Mem{Base: src, Index: i, Scale: 1, Disp: -1}, tmp.As8())
+					MOVB(Mem{Base: src, Index: base, Scale: 1, Disp: -1}, tmp2.As8())
+					CMPB(tmp.As8(), tmp2.As8())
+					JNE(LabelRef("repeat_extend_back_end_" + name))
+					LEAL(Mem{Base: base, Disp: -1}, base)
+					DECL(i)
+					JNZ(LabelRef("repeat_extend_back_loop_" + name))
+				}
+				Label("repeat_extend_back_end_" + name)
+
+				litLen, nextEmit := GP64(), GP64()
+				MOVL(base.As32(), litLen.As32())
+				MOVQ(nextEmitL, q(nextEmit.As32()))
+				SUBL(nextEmit.As32(), litLen.As32())
+				checkDst(0, litLen)
+
+				// Base is now at start. Emit until base.
+				// d += emitLiteral(dst[d:], src[nextEmit:base])
+				litSrc := GP64()
+				LEAQ(Mem{Base: src, Index: nextEmit, Scale: 1}, litSrc)
+				o.emitLiteral("repeat_emit_lits_"+name, litLen, nil, dst, litSrc, LabelRef("repeat_emit_lits_end_"+name), true)
+				Label("repeat_emit_lits_end_" + name)
+
+				// Extend forward
+				{
+					// s += 4 + checkRep
+					ADDL(U8(4+checkRep), s)
+
+					if true {
+						// candidate := s - repeat + 4 + checkRep
+						MOVL(s, candidate)
+						SUBQ(repeatL, q(candidate)) // candidate = s - repeat
+
+						// srcLeft = len(src) - s
+						srcLeft := GP64()
+						MOVQ(lenSrcQ, srcLeft)
+						SUBL(s, srcLeft.As32())
+						assert(func(ok LabelRef) {
+							// if srcleft < maxint32: ok
+							CMPQ(srcLeft, U32(0x7fffffff))
+							JB(ok)
+						})
+						// Forward address
+						forwardStart := GP64()
+						LEAQ(Mem{Base: src, Index: s, Scale: 1}, forwardStart)
+						// End address
+						backStart := GP64()
+						LEAQ(Mem{Base: src, Index: candidate, Scale: 1}, backStart)
+
+						length := o.matchLen("repeat_extend_"+name, forwardStart, backStart, srcLeft, nil, LabelRef("repeat_extend_forward_end_"+name))
+						forwardStart, backStart, srcLeft = nil, nil, nil
+						PCALIGN(Imm(16))
+						Label("repeat_extend_forward_end_" + name)
+						// s+= length
+						ADDL(length.As32(), s)
+					}
+				}
+				// Emit
+				{
+					// length = s-base
+					length := GP32()
+					MOVL(s, length)
+					SUBL(base.As32(), length) // length = s - base
+
+					offsetVal := GP32()
+					MOVQ(repeatL, q(offsetVal))
+
+					// Emit as repeat...
+					o.emitRepeat("match_repeat_"+name, length, nil, dst, LabelRef("repeat_end_emit_"+name))
+
+					Label("repeat_end_emit_" + name)
+					// Store new dst and nextEmit
+					MOVQ(q(s), nextEmitL)
+				}
+				if false {
+					// if s >= sLimit is picked up on next loop.
+					CMPQ(q(s.As32()), sLimitL)
+					JAE(LabelRef("emit_remainder_" + name))
+				}
+				JMP(LabelRef("search_loop_" + name))
 			}
-			if false {
-				// if s >= sLimit is picked up on next loop.
-				CMPQ(q(s.As32()), sLimitL)
-				JAE(LabelRef("emit_remainder_" + name))
+			if coldLayout {
+				coldFns = append(coldFns, repeatBody)
+			} else {
+				repeatBody()
 			}
-			JMP(LabelRef("search_loop_" + name))
 		}
 		Label("no_repeat_found_" + name)
 		{
-			// Check candidates are ok. All must be < s and < len(src)
-			assertCand(candidate, func(cand reg.Register, ok LabelRef) {
-				tmp := GP64()
-				MOVQ(lenSrcQ, tmp)
-				CMPL(tmp.As32(), cand)
-				JA(ok)
-			})
-			assertCand(candidate, func(cand reg.Register, ok LabelRef) {
-				CMPL(s, cand)
-				JA(ok)
-			})
-			if !skipOne {
-				assertCand(candidate2, func(cand reg.Register, ok LabelRef) {
+			if scalarPrefix {
+				compare := func(packed reg.GPVirtual, shift int, id string) {
+					expected := GP32()
+					MOVL(Mem{Base: src, Index: s, Scale: 1, Disp: shift}, expected)
+					if o.maxOffset > maxOffset {
+						CMPQ(packed, minPos)
+						JL(LabelRef("gp_clamp_" + id + name))
+						coldFns = append(coldFns, func() {
+							Label("gp_clamp_" + id + name)
+							minimum := GP64()
+							MOVQ(minPos, minimum)
+							SHRQ(U8(32), minimum)
+							CMPL(Mem{Base: src, Index: minimum, Scale: 1}, expected)
+							JNE(LabelRef("gp_miss_" + id + name))
+							MOVL(minimum.As32(), candidate)
+							if shift != 0 {
+								ADDL(U8(shift), s)
+							}
+							JMP(LabelRef("candidate_match_" + name))
+						})
+					}
+					CMPL(packed.As32(), expected)
+					JEQ(LabelRef("gp_hit_" + id + name))
+					Label("gp_miss_" + id + name)
+					coldFns = append(coldFns, func() {
+						Label("gp_hit_" + id + name)
+						MOVQ(packed, q(candidate))
+						SHRQ(U8(32), q(candidate))
+						if shift != 0 {
+							ADDL(U8(shift), s)
+						}
+						JMP(LabelRef("candidate_match_" + name))
+					})
+				}
+				compare(gp0, 0, "first_")
+				MOVQ(Mem{Base: table.r, Index: hash2, Scale: 8}, gp0)
+				saveVec(s, hash2, 2)
+				compare(gp1, 1, "second_")
+				compare(gp0, 2, "third_")
+				MOVQ(nextSTempL, q(s))
+				JMP(LabelRef("search_fast_" + name))
+			} else if prefixMode {
+				VMOVQ(Mem{Base: table.r, Index: hash2, Scale: 8}, c2)
+				if o.maxOffset > maxOffset {
+					if windowMode {
+						CMPB(windowClampL, U8(0))
+						JE(LabelRef("window_range_ok_" + name))
+						LEAL(Mem{Base: s, Disp: -maxOffset + 2}, minPos.As32())
+						MOVLQSX(minPos.As32(), minPos)
+						SHLQ(U8(32), minPos)
+					}
+					all, minimum, valid := YMM(), YMM(), YMM()
+					m := XMM()
+					flags := GP32()
+					VPUNPCKLQDQ(c1, c0, all.AsX())
+					VINSERTI128(U8(1), c2, all, all)
+					VMOVQ(minPos, m)
+					VPBROADCASTQ(m, minimum)
+					VPCMPGTQ(minimum, all, valid)
+					VMOVMSKPD(valid, flags)
+					ANDL(U8(7), flags)
+					CMPL(flags, U8(7))
+					JNE(LabelRef("prefix_range_slow_" + name))
+					if windowMode {
+						Label("window_range_ok_" + name)
+					}
+				}
+				mixed := XMM()
+				mask := GP32()
+				VPUNPCKLDQ(c1, c0, mixed)
+				VMOVLHPS(c2, mixed, mixed)
+				VPCMPEQD(prefixVec, mixed, mixed)
+				VPMOVMSKB(mixed, mask)
+				TESTL(U32(0xfff), mask)
+				JNZ(LabelRef("prefix_hit_" + name))
+				putThird := func() { saveVec(s, hash2, 2) }
+				putThird()
+				MOVQ(nextSTempL, q(s))
+				JMP(LabelRef("search_fast_" + name))
+				Label("prefix_hit_" + name)
+				VZEROUPPER()
+				TESTL(U32(0xf), mask)
+				JNZ(LabelRef("prefix_first_" + name))
+				putThird()
+				TESTL(U32(0xf0), mask)
+				JNZ(LabelRef("prefix_second_" + name))
+				VPEXTRD(U8(1), c2, candidate)
+				ADDL(U8(2), s)
+				JMP(LabelRef("candidate_match_" + name))
+				Label("prefix_first_" + name)
+				VPEXTRD(U8(1), c0, candidate)
+				JMP(LabelRef("candidate_match_" + name))
+				Label("prefix_second_" + name)
+				VPEXTRD(U8(1), c1, candidate)
+				INCL(s)
+				JMP(LabelRef("candidate_match_" + name))
+				if o.maxOffset > maxOffset {
+					coldFns = append(coldFns, func() {
+						Label("prefix_range_slow_" + name)
+						VZEROUPPER()
+						minimum := GP64()
+						MOVQ(minPos, minimum)
+						SHRQ(U8(32), minimum)
+						clamp := func(c reg.VecVirtual) {
+							VPEXTRD(U8(1), c, candidate)
+							CMPL(candidate, minimum.As32())
+							CMOVLLE(minimum.As32(), candidate)
+						}
+						clamp(c0)
+						CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32())
+						JEQ(LabelRef("candidate_match_" + name))
+						putThird()
+						cmp1 := GP64()
+						MOVQ(cv, cmp1)
+						SHRQ(U8(8), cmp1)
+						clamp(c1)
+						CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cmp1.As32())
+						JEQ(LabelRef("prefix_clamp_second_" + name))
+						SHRQ(U8(8), cmp1)
+						clamp(c2)
+						CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cmp1.As32())
+						JEQ(LabelRef("prefix_clamp_third_" + name))
+						MOVQ(nextSTempL, q(s))
+						JMP(LabelRef("search_loop_" + name))
+						Label("prefix_clamp_second_" + name)
+						INCL(s)
+						JMP(LabelRef("candidate_match_" + name))
+						Label("prefix_clamp_third_" + name)
+						ADDL(U8(2), s)
+						JMP(LabelRef("candidate_match_" + name))
+					})
+				}
+			} else {
+
+				// Check candidates are ok. All must be < s and < len(src)
+				assertCand(candidate, func(cand reg.Register, ok LabelRef) {
 					tmp := GP64()
 					MOVQ(lenSrcQ, tmp)
 					CMPL(tmp.As32(), cand)
 					JA(ok)
 				})
-				assertCand(candidate2, func(cand reg.Register, ok LabelRef) {
+				assertCand(candidate, func(cand reg.Register, ok LabelRef) {
 					CMPL(s, cand)
-					// Candidate2 is at s+1, so s is ok.
-					JAE(ok)
+					JA(ok)
 				})
-			}
-
-			checkCandidate(candidate, func() {
-				if match8 {
-					CMPQ(Mem{Base: src, Index: candidate, Scale: 1}, cv.As64()) // <<-- Hot
-				} else {
-					CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32()) // <<-- Hot
+				if !skipOne {
+					assertCand(candidate2, func(cand reg.Register, ok LabelRef) {
+						tmp := GP64()
+						MOVQ(lenSrcQ, tmp)
+						CMPL(tmp.As32(), cand)
+						JA(ok)
+					})
+					assertCand(candidate2, func(cand reg.Register, ok LabelRef) {
+						CMPL(s, cand)
+						// Candidate2 is at s+1, so s is ok.
+						JAE(ok)
+					})
 				}
-				JEQ(LabelRef("candidate_match_" + name))
-			})
 
-			tmp := GP32()
-			// cv >>= 8
-			if !skipOne {
-				if hashBytes > 7 {
-					MOVQ(Mem{Base: src, Index: s, Disp: 1, Scale: 1}, cv)
-				} else {
-					SHRQ(U8(8), cv)
-				}
-			}
-
-			// candidate = int(table[hash2]) - load early.
-			table.LoadIdx(hash2, candidate)
-			assert(func(ok LabelRef) {
-				tmp := GP64()
-				MOVQ(lenSrcQ, tmp)
-				CMPL(tmp.As32(), candidate)
-				JA(ok)
-			})
-			assertCand(candidate, func(cand reg.Register, ok LabelRef) {
-				// We may get s and s+1
-				tmp := GP32()
-				LEAL(Mem{Base: s, Disp: 2}, tmp)
-				CMPL(tmp, cand)
-				JA(ok)
-			})
-
-			LEAL(Mem{Base: s, Disp: 2}, tmp)
-
-			// if uint32(cv>>8) == load32(src, candidate2)
-			if !skipOne {
-				checkCandidate(candidate2, func() {
-					if match8 {
-						CMPQ(Mem{Base: src, Index: candidate2, Scale: 1}, cv.As64())
+				checkCandidate(candidate, func() {
+					if prefixMode {
+						JEQ(LabelRef("candidate_match_" + name))
+					} else if match8 {
+						CMPQ(Mem{Base: src, Index: candidate, Scale: 1}, cv.As64()) // <<-- Hot
 					} else {
-						CMPL(Mem{Base: src, Index: candidate2, Scale: 1}, cv.As32())
+						CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32()) // <<-- Hot
 					}
-					JEQ(LabelRef("candidate2_match_" + name))
+					if !prefixMode {
+						JEQ(LabelRef("candidate_match_" + name))
+					}
 				})
-			}
 
-			// table[hash2] = uint32(s + 2)
-			table.SaveIdx(tmp, hash2)
-
-			// cv >>= 8 (>> 16 total)
-			if hashBytes > 6 {
-				MOVQ(Mem{Base: src, Index: s, Disp: 2, Scale: 1}, cv)
-			} else {
-				if skipOne {
-					SHRQ(U8(16), cv)
-				} else {
-					SHRQ(U8(8), cv)
+				tmp := GP32()
+				// cv >>= 8
+				if !skipOne {
+					if hashBytes > 7 {
+						MOVQ(Mem{Base: src, Index: s, Disp: 1, Scale: 1}, cv)
+					} else {
+						SHRQ(U8(8), cv)
+					}
 				}
-			}
 
-			// if uint32(cv>>16) == load32(src, candidate)
-			checkCandidate(candidate, func() {
-				if match8 {
-					CMPQ(Mem{Base: src, Index: candidate, Scale: 1}, cv.As64())
-				} else {
-					CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32())
+				// candidate = int(table[hash2]) - load early.
+				table.LoadIdx(hash2, candidate)
+				assert(func(ok LabelRef) {
+					tmp := GP64()
+					MOVQ(lenSrcQ, tmp)
+					CMPL(tmp.As32(), candidate)
+					JA(ok)
+				})
+				assertCand(candidate, func(cand reg.Register, ok LabelRef) {
+					// We may get s and s+1
+					tmp := GP32()
+					LEAL(Mem{Base: s, Disp: 2}, tmp)
+					CMPL(tmp, cand)
+					JA(ok)
+				})
+
+				LEAL(Mem{Base: s, Disp: 2}, tmp)
+				if !*genArm64 && !o.match8 && maxLen > 65536 {
+					if prefixMode {
+						table.SavePrefix(tmp, hash2, cv, 8)
+					} else {
+						table.SaveIdx(tmp, hash2)
+					}
 				}
-				JEQ(LabelRef("candidate3_match_" + name))
-			})
 
-			// No match found, next loop
-			// s = nextS
-			MOVQ(nextSTempL, q(s))
-			JMP(LabelRef("search_loop_" + name))
+				// if uint32(cv>>8) == load32(src, candidate2)
+				if !skipOne {
+					checkCandidate(candidate2, func() {
+						if prefixMode {
+							JEQ(LabelRef("candidate2_match_" + name))
+						} else if match8 {
+							CMPQ(Mem{Base: src, Index: candidate2, Scale: 1}, cv.As64())
+						} else {
+							CMPL(Mem{Base: src, Index: candidate2, Scale: 1}, cv.As32())
+						}
+						if !prefixMode {
+							JEQ(LabelRef("candidate2_match_" + name))
+						}
+					})
+				}
 
-			// Matches candidate at s + 2 (3rd check)
-			Label("candidate3_match_" + name)
-			ADDL(U8(2), s)
-			JMP(LabelRef("candidate_match_" + name))
+				// table[hash2] = uint32(s + 2)
+				if *genArm64 || o.match8 || maxLen <= 65536 {
+					if prefixMode {
+						table.SavePrefix(tmp, hash2, cv, 8)
+					} else {
+						table.SaveIdx(tmp, hash2)
+					}
+				}
 
-			// Match at s + 1 (we calculated the hash, lets store it)
-			Label("candidate2_match_" + name)
-			// table[hash2] = uint32(s + 2)
-			table.SaveIdx(tmp, hash2)
-			// s++
-			INCL(s)
-			MOVL(candidate2, candidate)
+				// cv >>= 8 (>> 16 total)
+				if hashBytes > 6 {
+					MOVQ(Mem{Base: src, Index: s, Disp: 2, Scale: 1}, cv)
+				} else {
+					if skipOne {
+						SHRQ(U8(16), cv)
+					} else {
+						SHRQ(U8(8), cv)
+					}
+				}
+
+				// if uint32(cv>>16) == load32(src, candidate)
+				checkCandidate(candidate, func() {
+					if prefixMode {
+						JEQ(LabelRef("candidate3_match_" + name))
+					} else if match8 {
+						CMPQ(Mem{Base: src, Index: candidate, Scale: 1}, cv.As64())
+					} else {
+						CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32())
+					}
+					if !prefixMode {
+						JEQ(LabelRef("candidate3_match_" + name))
+					}
+				})
+
+				// No match found, next loop
+				// s = nextS
+				MOVQ(nextSTempL, q(s))
+				JMP(LabelRef("search_loop_" + name))
+
+				// Matches candidate at s + 2 (3rd check)
+				Label("candidate3_match_" + name)
+				ADDL(U8(2), s)
+				JMP(LabelRef("candidate_match_" + name))
+
+				// Match at s + 1 (we calculated the hash, lets store it)
+				Label("candidate2_match_" + name)
+				// table[hash2] = uint32(s + 2)
+				if *genArm64 || o.match8 || maxLen <= 65536 {
+					if prefixMode {
+						table.SavePrefix(tmp, hash2, cv, 8)
+					} else {
+						table.SaveIdx(tmp, hash2)
+					}
+				}
+				// s++
+				INCL(s)
+				if prefixMode {
+					MOVQ(candidate2.As64(), candidate.As64())
+				} else {
+					MOVL(candidate2, candidate)
+				}
+
+			}
 		}
 	}
 
 	Label("candidate_match_" + name)
+
 	// We have a match at 's' with src offset in "candidate" that matches at least 4 bytes.
 	// Extend backwards
 	if checkBack {
@@ -872,6 +1512,10 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 		MOVL(s, repeatVal)
 		SUBL(candidate, repeatVal)
 		MOVQ(q(repeatVal), repeatL)
+		if fastLoop {
+			LEAQ(Mem{Base: src, Index: candidate, Scale: 1}, repeatPtr)
+			SUBQ(q(s), repeatPtr)
+		}
 	}
 	// s+=4, candidate+=4
 	if match8 {
@@ -1000,7 +1644,7 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 				panic(err)
 			}
 			MOVQ(U32(0), ri.Addr)
-			if o.avx2 {
+			if o.avx2 || prefixMode {
 				VZEROUPPER()
 			}
 			RET()
@@ -1035,10 +1679,19 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 
 		table.LoadIdx(hash1, candidate)
 		table.SaveIdx(sm2, hash0)
-		table.SaveIdx(s, hash1)
+		if prefixMode {
+			table.SavePrefix(s, hash1, cv, 0)
+		} else {
+			table.SaveIdx(s, hash1)
+		}
 		MOVL(s, base.As32())
 		INCL(s) // Note s = s + 1 for a while
 
+		if prefixMode {
+			CMPL(candidate.As32(), cv.As32())
+			JNE(LabelRef("search_loop_" + name))
+			SHRQ(U8(32), candidate.As64())
+		}
 		if o.maxOffset > maxOffset {
 			// Check if offset exceeds max. minPos = base - maxOffset underflows
 			// negative for base < maxOffset (the first ~maxOffset bytes of every
@@ -1053,12 +1706,14 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			JMP(LabelRef("search_loop_" + name))
 			Label("match_nolit_len_ok" + name)
 		}
-		if match8 {
-			CMPQ(Mem{Base: src, Index: candidate, Scale: 1}, cv.As64())
-		} else {
-			CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32())
-		}
-		JNE(LabelRef("search_loop_" + name)) // << -- Hot
+		if !prefixMode {
+			if match8 {
+				CMPQ(Mem{Base: src, Index: candidate, Scale: 1}, cv.As64())
+			} else {
+				CMPL(Mem{Base: src, Index: candidate, Scale: 1}, cv.As32())
+			}
+			JNE(LabelRef("search_loop_" + name))
+		} // << -- Hot
 		// Prepare for emit
 		// Update repeat
 		{
@@ -1067,6 +1722,10 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			MOVL(base.As32(), repeatVal)
 			SUBL(candidate, repeatVal)
 			MOVQ(q(repeatVal), repeatL)
+			if fastLoop {
+				LEAQ(Mem{Base: src, Index: candidate, Scale: 1}, repeatPtr)
+				SUBQ(q(base), repeatPtr)
+			}
 		}
 		// s+=4, candidate+=4
 		checkDst(0, nil)
@@ -1180,11 +1839,14 @@ func (o options) genEncodeBlockAsm(name string, tableBits, skipLog, hashBytes, m
 			JAE(ok)
 		})
 	}
-	if o.avx2 {
+	if o.avx2 || prefixMode {
 		VZEROUPPER()
 	}
 	Store(length, ReturnIndex(0))
 	RET()
+	for _, fn := range coldFns {
+		fn()
+	}
 }
 
 // maxLitOverheadFor returns the largest literal header emitLiteral writes
@@ -2106,6 +2768,9 @@ func hashN(o options, hashBytes, tablebits int) hashGen {
 		MOVQ(U8(tablebits), h.mulreg)
 		return h
 	}
+	if o.hash32 && hashBytes == 4 && tablebits <= 32 {
+		return h
+	}
 	primebytes := uint64(0)
 	switch hashBytes {
 	case 3:
@@ -2123,12 +2788,24 @@ func hashN(o options, hashBytes, tablebits int) hashGen {
 	default:
 		panic("invalid hash length")
 	}
+	// Multiplication wraps modulo 2^64: fold the input shift into the constant.
+	if !*genArm64 && hashBytes < 8 {
+		primebytes <<= uint(64 - 8*hashBytes)
+	}
 	MOVQ(Imm(primebytes), h.mulreg)
 	return h
 }
 
 // hash uses multiply to get hash of the value.
 func (h hashGen) hash(val reg.GPVirtual) {
+	// low64((v << 32) * P) >> (64-b) == low32(v * P) >> (32-b).
+	// The signed immediate has the same low-32-bit product as uint32(P).
+	if h.o.hash32 && !h.o.bmi2 && h.bytes == 4 && h.tablebits <= 32 {
+		IMUL3L(I32(-1640531535), val.As32(), val.As32())
+		SHRL(U8(32-h.tablebits), val.As32())
+		return
+	}
+
 	if h.o.bmi2 {
 		if h.bytes < 8 {
 			BZHIQ(val, h.clear, val)
@@ -2137,7 +2814,7 @@ func (h hashGen) hash(val reg.GPVirtual) {
 		BZHIQ(val, h.mulreg, val)
 	}
 	// Move value to top of register.
-	if h.bytes < 8 {
+	if *genArm64 && h.bytes < 8 {
 		SHLQ(U8(64-8*h.bytes), val)
 	}
 	//  329 AMD64               :IMUL r64, r64                         L:   0.86ns=  3.0c  T:   0.29ns=  1.00c
@@ -3116,6 +3793,27 @@ func (o options) genMemMoveLong(name string, dst, src, length reg.GPVirtual, end
 		return
 	}
 
+	if o.literal128 {
+		CMPQ(length, U32(128))
+		JA(LabelRef(name + "forward_sse"))
+		var regs [8]reg.VecVirtual
+		for i := range regs {
+			regs[i] = XMM()
+		}
+		for i := 0; i < 4; i++ {
+			MOVOU(Mem{Base: src, Disp: i * 16}, regs[i])
+		}
+		for i := 0; i < 4; i++ {
+			MOVOU(Mem{Base: src, Index: length, Scale: 1, Disp: -64 + i*16}, regs[i+4])
+		}
+		for i := 0; i < 4; i++ {
+			MOVOU(regs[i], Mem{Base: dst, Disp: i * 16})
+		}
+		for i := 0; i < 4; i++ {
+			MOVOU(regs[i+4], Mem{Base: dst, Index: length, Scale: 1, Disp: -64 + i*16})
+		}
+		JMP(end)
+	}
 	// Store start and end for sse_tail
 	Label(name + "forward_sse")
 	X0, X1, X2, X3, X4, X5 := XMM(), XMM(), XMM(), XMM(), XMM(), XMM()
@@ -3370,6 +4068,47 @@ func (o options) matchLen(name string, a, b, len, dst reg.GPVirtual, end LabelRe
 		matched = dst.As32()
 	}
 	XORL(matched, matched)
+	var tmp2 reg.GPVirtual
+	if o.wideMatch {
+		tmp2 = GP64()
+		CMPL(len.As32(), U32(144))
+		JB(LabelRef("wide_skip_" + name))
+		// Most sparse matches stop within 16 bytes. Resolve these with the
+		// existing scalar exits before paying for a vector comparison.
+		MOVQ(Mem{Base: a, Index: matched, Scale: 1}, tmp)
+		XORQ(Mem{Base: b, Index: matched, Scale: 1}, tmp)
+		JNZ(LabelRef("matchlen_bsf_8_" + name))
+		MOVQ(Mem{Base: a, Index: matched, Scale: 1, Disp: 8}, tmp2)
+		XORQ(Mem{Base: b, Index: matched, Scale: 1, Disp: 8}, tmp2)
+		JNZ(LabelRef("matchlen_bsf_16" + name))
+		ADDL(U8(16), matched)
+		SUBL(U8(16), len.As32())
+		CMPB(Mem{Symbol: Symbol{Name: "·hasAVX2"}, Base: reg.StaticBase}, U8(0))
+		if o.integratedSSE {
+			JE(LabelRef("wide_sse_" + name))
+		} else {
+			JE(LabelRef("wide_skip_" + name))
+		}
+		y0, y1, y2, y3 := YMM(), YMM(), YMM(), YMM()
+		Label("wide_loop_" + name)
+		for i, y := range []reg.VecVirtual{y0, y1, y2, y3} {
+			VMOVDQU(Mem{Base: a, Index: matched, Scale: 1, Disp: i * 32}, y)
+			VPCMPEQB(Mem{Base: b, Index: matched, Scale: 1, Disp: i * 32}, y, y)
+		}
+		VPAND(y1, y0, y0)
+		VPAND(y3, y2, y2)
+		VPAND(y2, y0, y0)
+		VPMOVMSKB(y0, tmp.As32())
+		CMPL(tmp.As32(), I32(-1))
+		JNE(LabelRef("wide_done_" + name))
+		ADDL(U32(128), matched)
+		SUBL(U32(128), len.As32())
+		CMPL(len.As32(), U32(128))
+		JAE(LabelRef("wide_loop_" + name))
+		Label("wide_done_" + name)
+		VZEROUPPER()
+		Label("wide_skip_" + name)
+	}
 	if o.avx2 {
 		// Not faster...
 		o.matchLenAVX2(name+"Avx2", a, b, len, LabelRef("avx2_continue_"+name), end, dst)
@@ -3379,7 +4118,9 @@ func (o options) matchLen(name string, a, b, len, dst reg.GPVirtual, end LabelRe
 	JMP(LabelRef("matchlen_loop_16_entry_" + name))
 	PCALIGN(Imm(16))
 	Label("matchlen_loopback_16_" + name)
-	tmp2 := GP64()
+	if tmp2 == nil {
+		tmp2 = GP64()
+	}
 	MOVQ(Mem{Base: a, Index: matched, Scale: 1}, tmp)
 	MOVQ(Mem{Base: a, Index: matched, Scale: 1, Disp: 8}, tmp2)
 	XORQ(Mem{Base: b, Index: matched, Scale: 1}, tmp)
@@ -3456,6 +4197,33 @@ func (o options) matchLen(name string, a, b, len, dst reg.GPVirtual, end LabelRe
 	JNE(end)
 	LEAL(Mem{Base: matched, Disp: 1}, matched)
 	JMP(end)
+	if o.wideMatch && o.integratedSSE {
+		Label("wide_sse_" + name)
+		Label("sse_loop_" + name)
+		var vectors [8]reg.VecVirtual
+		for i := range vectors {
+			vectors[i] = XMM()
+			MOVOU(Mem{Base: a, Index: matched, Scale: 1, Disp: i * 16}, vectors[i])
+			other := XMM()
+			MOVOU(Mem{Base: b, Index: matched, Scale: 1, Disp: i * 16}, other)
+			PCMPEQB(other, vectors[i])
+		}
+		for step := 1; step < 8; step *= 2 {
+			for i := 0; i < 8; i += step * 2 {
+				PAND(vectors[i+step], vectors[i])
+			}
+		}
+
+		PMOVMSKB(vectors[0], tmp.As32())
+		CMPL(tmp.As32(), U32(65535))
+		JNE(LabelRef("wide_skip_" + name))
+		ADDL(U32(128), matched)
+		SUBL(U32(128), len.As32())
+		CMPL(len.As32(), U32(128))
+		JAE(LabelRef("sse_loop_" + name))
+
+		JMP(LabelRef("wide_skip_" + name))
+	}
 	return dst
 }
 
